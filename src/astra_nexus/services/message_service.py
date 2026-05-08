@@ -37,3 +37,7 @@ class MessageService:
     def list_for_run(self, run_id: str) -> list[AgentMessage]:
         with self.session_factory() as session:
             return MessageRepository(session).list_for_run(run_id=run_id)
+
+    def list_for_task(self, task_id: str, limit: int = 10) -> list[AgentMessage]:
+        with self.session_factory() as session:
+            return MessageRepository(session).list_for_task(task_id=task_id, limit=limit)

@@ -12,6 +12,10 @@ dependencies = [
     "uvicorn[standard]>=0.27,<1.0",
 ]
 
+[project.scripts]
+astra-nexus-api = "astra_nexus.main:run_api"
+astra-nexus-bot = "astra_nexus.telegram.run_bot:main"
+
 [project.optional-dependencies]
 dev = [
     "httpx>=0.27,<1.0",

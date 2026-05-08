@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -21,3 +22,6 @@ class TaskEvent:
             "payload": self.payload,
             "created_at": self.created_at.isoformat(),
         }
+
+
+EventSink = Callable[[TaskEvent], None]

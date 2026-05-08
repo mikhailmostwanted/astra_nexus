@@ -10,5 +10,22 @@ services:
     volumes:
       - ./data:/app/data
     environment:
-      ASTRA_DATABASE_URL: sqlite:///./data/astra_nexus.sqlite3
-      ASTRA_WORKSPACE_BASE_PATH: data/workspaces
+      DATABASE_URL: sqlite:///./data/astra_nexus.sqlite3
+      DATA_DIR: ./data
+      WORKSPACE_BASE_PATH: data/workspaces
+
+  bot:
+    build: .
+    container_name: astra-nexus-bot
+    command: astra-nexus-bot
+    profiles:
+      - bot
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+    environment:
+      DATABASE_URL: sqlite:///./data/astra_nexus.sqlite3
+      DATA_DIR: ./data
+      WORKSPACE_BASE_PATH: data/workspaces

@@ -42,3 +42,12 @@ class MessageRepository:
             .order_by(AgentMessage.created_at)
         )
         return list(self.session.scalars(stmt))
+
+    def list_for_task(self, task_id: str, limit: int = 10) -> list[AgentMessage]:
+        stmt = (
+            select(AgentMessage)
+            .where(AgentMessage.task_id == task_id)
+            .order_by(AgentMessage.created_at.desc())
+            .limit(limit)
+        )
+        return list(reversed(list(self.session.scalars(stmt))))

@@ -7,8 +7,8 @@
 
 ## Этап 2: Telegram task flow
 
-Подключить реальный запуск aiogram bot, создание задач из `/task`, вывод статусов,
-сообщений агентов и итоговых артефактов в Telegram.
+Подключить aiogram polling, отдельный bot entrypoint, создание задач из `/task`,
+background runner, вывод сообщений агентов по шагам, `/status`, `/agents` и `/cancel`.
 
 ## Этап 3: NoDriver ChatGPT bridge
 

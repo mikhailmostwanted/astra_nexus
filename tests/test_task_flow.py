@@ -43,3 +43,32 @@ def test_orchestrator_runs_task_and_persists_agent_messages(tmp_path: Path) -> N
         "critic",
         "finalizer",
     ]
+
+
+def test_orchestrator_emits_agent_events_for_telegram_log(tmp_path: Path) -> None:
+    session_factory = create_session_factory("sqlite:///:memory:")
+    init_db(session_factory)
+    events = []
+
+    orchestrator = TaskOrchestrator(
+        task_service=TaskService(session_factory),
+        agent_service=AgentService(session_factory),
+        message_service=MessageService(session_factory),
+        brain_provider=DummyBrainProvider(),
+        workspace_base_path=tmp_path,
+    )
+
+    result = orchestrator.run_task(
+        user_id="telegram:42",
+        title="Сделать план",
+        prompt="Нужен план MVP",
+        event_sink=events.append,
+    )
+
+    agent_events = [event for event in events if event.type == "agent.message"]
+
+    assert result.task_id
+    assert len(agent_events) == 5
+    assert agent_events[0].payload["agent_id"] == "coordinator"
+    assert agent_events[0].payload["content"].startswith("План:")
+    assert events[-1].type == "task.done"

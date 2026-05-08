@@ -50,6 +50,29 @@ class TaskService:
             session.commit()
             return run
 
+    def get_latest_run(self, task_id: str) -> TaskRun | None:
+        with self.session_factory() as session:
+            return TaskRepository(session).get_latest_run(task_id)
+
+    def list_artifacts(self, task_id: str) -> list[Artifact]:
+        with self.session_factory() as session:
+            return TaskRepository(session).list_artifacts(task_id)
+
+    def cancel_task(self, task_id: str) -> Task:
+        with self.session_factory() as session:
+            repository = TaskRepository(session)
+            task = repository.get(task_id)
+            if task is None:
+                raise ValueError(f"Задача не найдена: {task_id}")
+            if task.state not in {TaskState.DONE.value, TaskState.FAILED.value}:
+                repository.update_state(task, TaskState.CANCELLED)
+            session.commit()
+            return task
+
+    def is_cancelled(self, task_id: str) -> bool:
+        task = self.get_task(task_id)
+        return task is not None and task.state == TaskState.CANCELLED.value
+
     def create_artifact(self, task_id: str, run_id: str, path: str, kind: str) -> Artifact:
         with self.session_factory() as session:
             artifact = TaskRepository(session).create_artifact(

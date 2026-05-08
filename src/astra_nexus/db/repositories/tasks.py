@@ -41,10 +41,23 @@ class TaskRepository:
         self.session.add(run)
         return run
 
+    def get_latest_run(self, task_id: str) -> TaskRun | None:
+        stmt = (
+            select(TaskRun)
+            .where(TaskRun.task_id == task_id)
+            .order_by(TaskRun.started_at.desc())
+            .limit(1)
+        )
+        return self.session.scalar(stmt)
+
     def complete_run(self, run: TaskRun, state: TaskState) -> TaskRun:
         run.state = state.value
         run.completed_at = datetime.now(UTC)
         return run
+
+    def list_artifacts(self, task_id: str) -> list[Artifact]:
+        stmt = select(Artifact).where(Artifact.task_id == task_id).order_by(Artifact.created_at)
+        return list(self.session.scalars(stmt))
 
     def create_artifact(self, task_id: str, run_id: str, path: str, kind: str) -> Artifact:
         artifact = Artifact(
