@@ -7,6 +7,7 @@ from astra_nexus.telegram.presenters.agent_messages import render_agent_message,
 from astra_nexus.telegram.presenters.task_cards import (
     render_final_result,
     render_task_accepted,
+    render_task_event,
     render_task_status,
 )
 
@@ -99,3 +100,24 @@ def test_render_agents_shows_role_status_and_description() -> None:
     assert "coordinator" in text
     assert "active" in text
     assert "Разбивает задачу" in text
+
+
+def test_render_brain_provider_error_event_without_traceback() -> None:
+    event = TaskEvent(
+        type="task.failed",
+        task_id="task_123",
+        run_id="run_456",
+        payload={
+            "status": "login_required",
+            "message": "требуется ручной вход в ChatGPT",
+            "action": "запусти astra-nexus-nodriver-login и авторизуйся",
+        },
+    )
+
+    text = render_task_event(event)
+
+    assert text is not None
+    assert "Провайдер мозга недоступен" in text
+    assert "требуется ручной вход" in text
+    assert "astra-nexus-nodriver-login" in text
+    assert "Traceback" not in text

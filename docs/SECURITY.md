@@ -9,6 +9,8 @@
 - cookies
 - browser profiles
 - ChatGPT Web sessions
+- `data/browser_profiles/`
+- `data/debug/`
 - Telegram session files
 - SQLite data и workspace-артефакты пользователя
 

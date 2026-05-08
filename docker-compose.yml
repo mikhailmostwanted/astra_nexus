@@ -13,6 +13,10 @@ services:
       DATABASE_URL: sqlite:///./data/astra_nexus.sqlite3
       DATA_DIR: ./data
       WORKSPACE_BASE_PATH: data/workspaces
+      BRAIN_PROVIDER: ${BRAIN_PROVIDER:-dummy}
+      NODRIVER_USER_DATA_DIR: ./data/browser_profiles/default
+      NODRIVER_HEADLESS: ${NODRIVER_HEADLESS:-false}
+      NODRIVER_CHATGPT_URL: https://chatgpt.com/
 
   bot:
     build: .
@@ -29,3 +33,7 @@ services:
       DATABASE_URL: sqlite:///./data/astra_nexus.sqlite3
       DATA_DIR: ./data
       WORKSPACE_BASE_PATH: data/workspaces
+      BRAIN_PROVIDER: ${BRAIN_PROVIDER:-dummy}
+      NODRIVER_USER_DATA_DIR: ./data/browser_profiles/default
+      NODRIVER_HEADLESS: ${NODRIVER_HEADLESS:-false}
+      NODRIVER_CHATGPT_URL: https://chatgpt.com/

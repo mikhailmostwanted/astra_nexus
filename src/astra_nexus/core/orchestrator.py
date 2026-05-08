@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from astra_nexus.agents.registry import AgentRegistry, create_default_registry
-from astra_nexus.brain.base import BrainProvider
+from astra_nexus.brain.base import BrainProvider, BrainProviderError
 from astra_nexus.core.events import EventSink, TaskEvent
 from astra_nexus.core.task_state import TaskState
 from astra_nexus.core.workspace import WorkspaceManager
@@ -183,11 +183,17 @@ class TaskOrchestrator:
                 final_text=final_text,
                 artifact_path=artifact_path,
             )
-        except Exception:
+        except Exception as exc:
             self.task_service.update_task_state(context.task_id, TaskState.FAILED)
             self.task_service.complete_run(context.run_id, TaskState.FAILED)
+            payload = self._error_payload(exc)
             self._record_event(
-                TaskEvent(type="task.failed", task_id=context.task_id, run_id=context.run_id),
+                TaskEvent(
+                    type="task.failed",
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    payload=payload,
+                ),
                 event_sink,
             )
             raise
@@ -214,3 +220,16 @@ class TaskOrchestrator:
         self.workspace_manager.append_event(event.task_id, event.as_dict())
         if event_sink is not None:
             event_sink(event)
+
+    def _error_payload(self, exc: Exception) -> dict[str, str]:
+        if isinstance(exc, BrainProviderError):
+            return {
+                "status": exc.status,
+                "message": str(exc),
+                "action": exc.action,
+            }
+        return {
+            "status": "failed",
+            "message": "задача завершилась с ошибкой",
+            "action": "проверь server logs",
+        }

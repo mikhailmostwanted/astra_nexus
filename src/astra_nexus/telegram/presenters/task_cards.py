@@ -81,7 +81,18 @@ def render_task_event(event: TaskEvent) -> str | None:
             f"Артефакт: {event.payload.get('artifact_path', '')}"
         )
     if event.type == "task.failed":
-        return f"Astra Nexus\nЗадача завершилась с ошибкой: {event.task_id}"
+        status = str(event.payload.get("status", "failed"))
+        message = str(event.payload.get("message", "задача завершилась с ошибкой"))
+        action = str(event.payload.get("action", "проверь server logs"))
+        if status in {"login_required", "timeout", "selector_not_found", "unavailable"}:
+            return (
+                "Astra Nexus\n"
+                "Провайдер мозга недоступен\n"
+                f"Задача: {event.task_id}\n"
+                f"Причина: {message}\n"
+                f"Что сделать: {action}"
+            )
+        return f"Astra Nexus\nЗадача завершилась с ошибкой: {event.task_id}\nПричина: {message}"
     if event.type == "task.cancelled":
         return f"Astra Nexus\nЗадача отменена: {event.task_id}"
     return None

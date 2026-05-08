@@ -20,6 +20,7 @@ Backend API и Telegram bot запускаются отдельно:
 
 - `astra-nexus-api` или `python -m astra_nexus.main`;
 - `astra-nexus-bot` или `python -m astra_nexus.telegram.run_bot`.
+- `astra-nexus-nodriver-login` для ручной подготовки локального ChatGPT Web profile.
 
 Оба процесса используют один bootstrap контейнер сервисов, одну SQLite базу и один
 workspace root.
@@ -63,5 +64,10 @@ Telegram layer передаёт callback/event sink, форматирует со
 детерминированные структурированные ответы, чтобы можно было проверять Telegram flow,
 историю сообщений, workspace и финальные артефакты без платных API.
 
-Следующий архитектурный шаг - заменить dummy provider на `NoDriverProvider`, сохранив
-контракт `BrainProvider.ask(...)`.
+`NoDriverProvider` реализует тот же контракт `BrainProvider.ask(...)`, но отправляет
+prompt в ChatGPT Web через локальную браузерную сессию. Это bridge, а не ядро системы:
+orchestrator, агенты, Telegram и DB не знают деталей браузерной автоматизации.
+
+Ошибки browser bridge преобразуются в доменные статусы `login_required`, `timeout`,
+`selector_not_found`, `unavailable`; Telegram показывает короткое действие вместо
+traceback.

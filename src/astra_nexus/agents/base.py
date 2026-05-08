@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from astra_nexus.brain.base import BrainProvider
+from astra_nexus.brain.base import BrainProvider, BrainResponse
 
 
 @dataclass(frozen=True)
@@ -38,10 +41,12 @@ class BaseAgent:
     ) -> AgentOutput:
         context = context or {}
         prompt = self.build_prompt(task_prompt=task_prompt, context=context)
-        response = brain_provider.ask(
-            agent_id=self.agent_id,
-            prompt=prompt,
-            context={**context, "task_prompt": task_prompt},
+        response = _resolve_brain_response(
+            brain_provider.ask(
+                agent_id=self.agent_id,
+                prompt=prompt,
+                context={**context, "task_prompt": task_prompt},
+            )
         )
         return AgentOutput(
             agent_id=self.agent_id,
@@ -49,3 +54,17 @@ class BaseAgent:
             content=response.content,
             metadata={"provider": response.provider, **response.metadata},
         )
+
+
+def _resolve_brain_response(response: BrainResponse | Any) -> BrainResponse:
+    if not inspect.isawaitable(response):
+        return response
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(response)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(lambda: asyncio.run(response))
+        return future.result()

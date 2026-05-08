@@ -13,10 +13,20 @@ venv/
 !.env.example
 *.session
 *.session-journal
+cookies*
+storage_state*
 cookies/
 browser-profile/
 browser-data/
 telegram.session*
+data/browser_profiles/
+data/debug/
+**/BrowserMetrics*
+**/Crashpad/
+**/Default/Cookies*
+**/Default/Local Storage/
+**/Default/Session Storage/
+**/Default/Sessions/
 
 # Данные MVP-хранилища и рабочие пространства
 data/*

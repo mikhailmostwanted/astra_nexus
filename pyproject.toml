@@ -7,6 +7,7 @@ dependencies = [
     "aiogram>=3.4,<4.0",
     "alembic>=1.13,<2.0",
     "fastapi>=0.110,<1.0",
+    "nodriver>=0.46,<1.0",
     "pydantic-settings>=2.2,<3.0",
     "sqlalchemy>=2.0,<3.0",
     "uvicorn[standard]>=0.27,<1.0",
@@ -15,6 +16,7 @@ dependencies = [
 [project.scripts]
 astra-nexus-api = "astra_nexus.main:run_api"
 astra-nexus-bot = "astra_nexus.telegram.run_bot:main"
+astra-nexus-nodriver-login = "astra_nexus.brain.nodriver.login:main"
 
 [project.optional-dependencies]
 dev = [

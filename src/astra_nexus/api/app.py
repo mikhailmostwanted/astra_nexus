@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from astra_nexus.bootstrap import build_container
 from astra_nexus.config.settings import Settings, load_settings
 
-from .routes import agents, health, tasks
+from .routes import agents, brain, health, tasks
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.task_service = container.task_service
     app.state.agent_service = container.agent_service
     app.state.message_service = container.message_service
+    app.state.brain_provider = container.brain_provider
     app.state.orchestrator = container.orchestrator
 
     if settings.telegram_bot_token is None:
@@ -29,4 +30,5 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(tasks.router)
     app.include_router(agents.router)
+    app.include_router(brain.router)
     return app

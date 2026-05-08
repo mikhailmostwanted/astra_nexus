@@ -6,8 +6,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from astra_nexus.agents.registry import AgentRegistry, create_default_registry
 from astra_nexus.brain.base import BrainProvider
-from astra_nexus.brain.dummy_provider import DummyBrainProvider
-from astra_nexus.brain.nodriver_provider import NoDriverProvider
+from astra_nexus.brain.factory import build_brain_provider
 from astra_nexus.config.settings import Settings, load_settings
 from astra_nexus.core.orchestrator import TaskOrchestrator
 from astra_nexus.db.session import create_session_factory, init_db
@@ -25,6 +24,7 @@ class AppContainer:
     task_service: TaskService
     agent_service: AgentService
     message_service: MessageService
+    brain_provider: BrainProvider
     orchestrator: TaskOrchestrator
 
 
@@ -41,11 +41,12 @@ def build_container(settings: Settings | None = None) -> AppContainer:
     message_service = MessageService(session_factory)
     agent_service.sync_registry(registry)
 
+    brain_provider = build_brain_provider(settings)
     orchestrator = TaskOrchestrator(
         task_service=task_service,
         agent_service=agent_service,
         message_service=message_service,
-        brain_provider=build_brain_provider(settings),
+        brain_provider=brain_provider,
         workspace_base_path=settings.workspace_base_path,
         registry=registry,
     )
@@ -57,15 +58,6 @@ def build_container(settings: Settings | None = None) -> AppContainer:
         task_service=task_service,
         agent_service=agent_service,
         message_service=message_service,
+        brain_provider=brain_provider,
         orchestrator=orchestrator,
     )
-
-
-def build_brain_provider(settings: Settings) -> BrainProvider:
-    match settings.brain_provider:
-        case "dummy":
-            return DummyBrainProvider()
-        case "nodriver":
-            return NoDriverProvider()
-        case unknown:
-            raise ValueError(f"Неизвестный brain-provider: {unknown}")

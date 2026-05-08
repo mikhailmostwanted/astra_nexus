@@ -12,8 +12,8 @@ background runner, вывод сообщений агентов по шагам,
 
 ## Этап 3: NoDriver ChatGPT bridge
 
-Реализовать `NoDriverProvider`, управление browser profile, очередность запросов и
-безопасное хранение локальных сессий вне git.
+Реализовать `NoDriverProvider`, управление browser profile, ручной login helper,
+health endpoint и безопасное хранение локальных сессий вне git.
 
 ## Этап 4: файлы и DOCX
 
