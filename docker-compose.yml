@@ -1,0 +1,14 @@
+services:
+  api:
+    build: .
+    container_name: astra-nexus-api
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+    environment:
+      ASTRA_DATABASE_URL: sqlite:///./data/astra_nexus.sqlite3
+      ASTRA_WORKSPACE_BASE_PATH: data/workspaces

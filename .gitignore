@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Локальные настройки и секреты
+.env
+.env.*
+!.env.example
+*.session
+*.session-journal
+cookies/
+browser-profile/
+browser-data/
+telegram.session*
+
+# Данные MVP-хранилища и рабочие пространства
+data/*
+!data/.gitkeep
+
+# IDE и ОС
+.DS_Store
+.idea/
+.vscode/
