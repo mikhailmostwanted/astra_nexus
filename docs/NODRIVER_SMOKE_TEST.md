@@ -55,6 +55,11 @@ astra-nexus-nodriver-smoke
 - печатает ответ;
 - закрывает браузер и освобождает lock.
 
+ChatGPT composer сейчас является ProseMirror/contenteditable-элементом, поэтому smoke
+заполняет его через JavaScript focus, selection, `insertText` и `input/change` events.
+Если вставка не подтвердилась чтением текста из composer, команда вернёт
+`prompt_insert_failed` вместо Python traceback.
+
 Успешный вывод содержит:
 
 ```text

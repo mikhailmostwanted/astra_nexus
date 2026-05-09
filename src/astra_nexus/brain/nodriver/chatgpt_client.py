@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -16,6 +17,7 @@ from astra_nexus.brain.nodriver.exceptions import (
     NoDriverChatGPTUINotReadyError,
     NoDriverLoginRequiredError,
     NoDriverPromptBoxNotFoundError,
+    NoDriverPromptInsertFailedError,
     NoDriverProviderError,
     NoDriverSelectorNotFoundError,
     NoDriverTimeoutError,
@@ -98,10 +100,10 @@ class ChatGPTClient:
 
         before_count = len(await self._assistant_messages(tab))
         self._log_stage("chatgpt.prompt_box.search.started", debug_context)
-        prompt_input = await self._wait_for_prompt_box(tab, debug_context, login_state)
+        await self._wait_for_prompt_box(tab, debug_context, login_state)
 
         self._log_stage("chatgpt.prompt.insert.started", debug_context)
-        await self._fill_prompt(prompt_input, prompt)
+        await self._fill_prompt(tab, prompt)
         self._log_stage("chatgpt.prompt.insert.ok", debug_context)
 
         self._log_stage("chatgpt.send.started", debug_context)
@@ -270,20 +272,167 @@ class ChatGPTClient:
             return
         await asyncio.sleep(min(0.5, remaining))
 
-    async def _fill_prompt(self, element: Any, prompt: str) -> None:
-        if hasattr(element, "set_text"):
-            await element.set_text(prompt)
-            return
-        if hasattr(element, "send_keys"):
-            await element.send_keys(prompt)
-            return
-        raise NoDriverPromptBoxNotFoundError(
-            "Элемент prompt не поддерживает ввод текста.",
+    async def _fill_prompt(self, tab: Any, prompt: str) -> dict[str, Any]:
+        details = await self._insert_prompt_with_js(tab, prompt)
+        if details.get("ok"):
+            return details
+        raise NoDriverPromptInsertFailedError(
+            "Не удалось вставить prompt в поле ввода ChatGPT.",
             stage="chatgpt.prompt.insert.started",
             url=await self.session.current_url(),
             page_title=await self.session.current_title(),
             selector=", ".join(PROMPT_INPUT_SELECTORS),
+            details=details,
         )
+
+    async def _insert_prompt_with_js(self, tab: Any, prompt: str) -> dict[str, Any]:
+        script = self._build_prompt_insert_script(prompt)
+        try:
+            result = await evaluate_script(tab, script)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+                "selector": ", ".join(PROMPT_INPUT_SELECTORS),
+            }
+        if not isinstance(result, dict):
+            return {
+                "ok": False,
+                "error": "prompt_insert_result_not_object",
+                "raw_result": result,
+                "selector": ", ".join(PROMPT_INPUT_SELECTORS),
+            }
+        return result
+
+    def _build_prompt_insert_script(self, prompt: str) -> str:
+        prompt_json = json.dumps(prompt, ensure_ascii=False)
+        selectors_json = json.dumps(PROMPT_INPUT_SELECTORS, ensure_ascii=False)
+        return f"""
+/* PROMPT_INSERT */
+(() => {{
+  const prompt = {prompt_json};
+  const selectors = {selectors_json};
+
+  function visible(node) {{
+    if (!node) {{
+      return false;
+    }}
+    const rect = node.getBoundingClientRect();
+    const style = window.getComputedStyle(node);
+    return (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      style.display !== 'none' &&
+      style.visibility !== 'hidden'
+    );
+  }}
+
+  function textOf(node) {{
+    if (!node) {{
+      return '';
+    }}
+    if ('value' in node) {{
+      return node.value || '';
+    }}
+    return node.innerText || node.textContent || '';
+  }}
+
+  function dispatchTextEvents(node) {{
+    try {{
+      node.dispatchEvent(
+        new InputEvent('input', {{
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: prompt,
+        }})
+      );
+    }} catch (_error) {{
+      node.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    }}
+    node.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  }}
+
+  const target = selectors
+    .map((selector) => {{
+      try {{
+        return document.querySelector(selector);
+      }} catch (_error) {{
+        return null;
+      }}
+    }})
+    .find((node) => node && visible(node));
+
+  if (!target) {{
+    return {{
+      ok: false,
+      error: 'prompt_element_not_found',
+      selector: selectors.join(', '),
+    }};
+  }}
+
+  target.focus();
+  const tagName = (target.tagName || '').toLowerCase();
+  const role = target.getAttribute('role') || '';
+  const isTextInput =
+    tagName === 'textarea' ||
+    (tagName === 'input' && ['text', 'search', ''].includes(target.type || ''));
+  const isContentEditable = Boolean(target.isContentEditable);
+
+  if (isTextInput) {{
+    const prototype = tagName === 'textarea'
+      ? window.HTMLTextAreaElement.prototype
+      : window.HTMLInputElement.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, 'value');
+    if (descriptor && descriptor.set) {{
+      descriptor.set.call(target, prompt);
+    }} else {{
+      target.value = prompt;
+    }}
+    dispatchTextEvents(target);
+  }} else if (isContentEditable) {{
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(target);
+    if (selection) {{
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }}
+    document.execCommand('delete', false, null);
+    const inserted = document.execCommand('insertText', false, prompt);
+    if (!inserted) {{
+      target.textContent = prompt;
+    }}
+    dispatchTextEvents(target);
+    target.focus();
+  }} else {{
+    return {{
+      ok: false,
+      error: 'prompt_element_not_editable',
+      tagName,
+      id: target.id || '',
+      role,
+      isContentEditable,
+      selector: selectors.join(', '),
+    }};
+  }}
+
+  const visibleText = textOf(target);
+  const ok = visibleText === prompt || visibleText.trim() === prompt.trim();
+  return {{
+    ok,
+    textLength: visibleText.length,
+    visibleText,
+    expectedLength: prompt.length,
+    tagName,
+    id: target.id || '',
+    role,
+    isContentEditable,
+    selector: selectors.join(', '),
+  }};
+}})()
+"""
 
     async def _wait_for_generation(self, tab: Any, before_count: int) -> None:
         deadline = (

@@ -143,6 +143,14 @@ class NoDriverChatGPTUINotReadyError(NoDriverPromptBoxNotFoundError):
     )
 
 
+class NoDriverPromptInsertFailedError(NoDriverProviderError):
+    status = "prompt_insert_failed"
+    user_message = "не удалось вставить prompt в поле ввода ChatGPT"
+    action = (
+        "запусти astra-nexus-nodriver-dom-probe и проверь, что composer ChatGPT доступен для ввода"
+    )
+
+
 class NoDriverPageLoadError(NoDriverProviderError):
     status = "unavailable"
     user_message = "страница ChatGPT не загрузилась"
