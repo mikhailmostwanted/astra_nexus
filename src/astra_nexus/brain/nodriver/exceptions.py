@@ -15,6 +15,12 @@ class NoDriverDependencyError(NoDriverProviderError):
     action = "установи зависимости проекта: pip install -e ."
 
 
+class NoDriverBrowserConnectError(NoDriverProviderError):
+    status = "browser_connect_failed"
+    user_message = "не удалось подключиться к запущенному браузеру"
+    action = "запусти astra-nexus-nodriver-diagnose и проверь Chrome/browser profile"
+
+
 class NoDriverLoginRequiredError(NoDriverProviderError):
     status = "login_required"
     user_message = "требуется ручной вход в ChatGPT"

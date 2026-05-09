@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from astra_nexus.brain.nodriver.exceptions import (
+    NoDriverBrowserConnectError,
     NoDriverLoginRequiredError,
     NoDriverTimeoutError,
 )
@@ -42,3 +43,16 @@ def test_nodriver_provider_maps_timeout_error() -> None:
 
     assert exc.value.status == "timeout"
     assert "повторить" in exc.value.action.lower()
+
+
+def test_nodriver_provider_maps_browser_connect_failed_error() -> None:
+    provider = NoDriverProvider(
+        settings=Settings(brain_provider="nodriver"),
+        client=FailingClient(NoDriverBrowserConnectError("Failed to connect to browser")),
+    )
+
+    with pytest.raises(NoDriverBrowserConnectError) as exc:
+        asyncio.run(provider.ask(agent_id="writer", prompt="Промпт"))
+
+    assert exc.value.status == "browser_connect_failed"
+    assert "diagnose" in exc.value.action

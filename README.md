@@ -96,6 +96,12 @@ astra-nexus-nodriver-login
 profile остаются только локально в `data/browser_profiles/` и не коммитятся.
 Подробности: [docs/NODRIVER.md](docs/NODRIVER.md).
 
+Если Chrome стартует, но NoDriver не подключается:
+
+```bash
+astra-nexus-nodriver-diagnose
+```
+
 ## Тесты и качество
 
 ```bash

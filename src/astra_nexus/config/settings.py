@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,6 +36,24 @@ class Settings(BaseSettings):
     nodriver_headless: bool = Field(
         default=False,
         validation_alias=AliasChoices("ASTRA_NODRIVER_HEADLESS", "NODRIVER_HEADLESS"),
+    )
+    nodriver_start_timeout_seconds: int = Field(
+        default=30,
+        validation_alias=AliasChoices(
+            "ASTRA_NODRIVER_START_TIMEOUT_SECONDS",
+            "NODRIVER_START_TIMEOUT_SECONDS",
+        ),
+    )
+    nodriver_no_sandbox: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("ASTRA_NODRIVER_NO_SANDBOX", "NODRIVER_NO_SANDBOX"),
+    )
+    nodriver_browser_executable_path: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "ASTRA_NODRIVER_BROWSER_EXECUTABLE_PATH",
+            "NODRIVER_BROWSER_EXECUTABLE_PATH",
+        ),
     )
     nodriver_chatgpt_url: str = Field(
         default="https://chatgpt.com/",
@@ -73,6 +91,8 @@ class Settings(BaseSettings):
             "NODRIVER_SCREENSHOTS_DIR",
         ),
     )
+    nodriver_start_retry_attempts: int = 3
+    nodriver_start_retry_delay_seconds: float = 2.0
     log_level: str = Field(
         default="INFO",
         validation_alias=AliasChoices("ASTRA_LOG_LEVEL", "LOG_LEVEL"),
@@ -97,6 +117,13 @@ class Settings(BaseSettings):
         extra="ignore",
         populate_by_name=True,
     )
+
+    @field_validator("nodriver_browser_executable_path", mode="before")
+    @classmethod
+    def empty_browser_executable_path_as_none(cls, value: object) -> object:
+        if value == "":
+            return None
+        return value
 
 
 @lru_cache

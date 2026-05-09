@@ -84,7 +84,13 @@ def render_task_event(event: TaskEvent) -> str | None:
         status = str(event.payload.get("status", "failed"))
         message = str(event.payload.get("message", "задача завершилась с ошибкой"))
         action = str(event.payload.get("action", "проверь server logs"))
-        if status in {"login_required", "timeout", "selector_not_found", "unavailable"}:
+        if status in {
+            "browser_connect_failed",
+            "login_required",
+            "timeout",
+            "selector_not_found",
+            "unavailable",
+        }:
             return (
                 "Astra Nexus\n"
                 "Провайдер мозга недоступен\n"
