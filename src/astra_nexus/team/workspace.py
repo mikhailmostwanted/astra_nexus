@@ -54,6 +54,7 @@ class TeamRunWorkspace:
                 {
                     "role": task.profile.role.value,
                     "display_name": task.profile.display_name,
+                    "short_description": task.profile.short_description,
                     "task_id": task.id,
                     "task_status": task.status.value,
                     "result_id": result.id if result is not None else None,
@@ -93,26 +94,54 @@ class TeamRunWorkspace:
         display_name = profile.display_name if profile is not None else role.value
         status = task.status.value if task is not None else "not_started"
         content = result.content if result is not None else ""
+        prompt_section = self._prompt_markdown(result) if result is not None else ""
 
+        sections = [
+            f"# {role.value}",
+            "",
+            f"Имя: {display_name}",
+            f"Роль: {role.value}",
+            "",
+            "## Задача",
+            "",
+            run.user_task,
+            "",
+            "## Статус",
+            "",
+            status,
+            "",
+            "## Результат",
+            "",
+            content,
+            "",
+        ]
+        if prompt_section:
+            sections.extend([prompt_section, ""])
+        return "\n".join(sections)
+
+    def _prompt_markdown(self, result: AgentResult) -> str:
+        prompt = result.metadata.get("prompt")
+        if not isinstance(prompt, dict):
+            return ""
+        system_prompt = prompt.get("system_prompt", "")
+        user_prompt = prompt.get("user_prompt", "")
+        if not system_prompt and not user_prompt:
+            return ""
         return "\n".join(
             [
-                f"# {role.value}",
+                "## Внутренний prompt",
                 "",
-                f"Имя: {display_name}",
-                f"Роль: {role.value}",
+                "### System",
                 "",
-                "## Задача",
+                "```text",
+                str(system_prompt),
+                "```",
                 "",
-                run.user_task,
+                "### User",
                 "",
-                "## Статус",
-                "",
-                status,
-                "",
-                "## Результат",
-                "",
-                content,
-                "",
+                "```text",
+                str(user_prompt),
+                "```",
             ]
         )
 

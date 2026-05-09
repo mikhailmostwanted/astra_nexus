@@ -17,13 +17,16 @@ from astra_nexus.team.profiles import (
     DEFAULT_AGENT_PROFILES,
     default_profiles_by_role,
 )
+from astra_nexus.team.prompting import AgentContext, AgentPrompt, TeamPromptBuilder
 from astra_nexus.team.provider import TeamProvider, TeamProviderError
 from astra_nexus.team.workspace import TeamRunWorkspace
 
 __all__ = [
     "DEFAULT_AGENT_PIPELINE",
     "DEFAULT_AGENT_PROFILES",
+    "AgentContext",
     "AgentProfile",
+    "AgentPrompt",
     "AgentResult",
     "AgentRole",
     "AgentTask",
@@ -36,6 +39,7 @@ __all__ = [
     "RunStatus",
     "TeamProvider",
     "TeamProviderError",
+    "TeamPromptBuilder",
     "TeamRun",
     "TeamRunOutcome",
     "TeamRunWorkspace",

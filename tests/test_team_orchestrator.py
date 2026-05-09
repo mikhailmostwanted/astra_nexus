@@ -49,7 +49,7 @@ def test_team_run_events_are_ready_for_future_telegram_log() -> None:
         event for event in outcome.run.events if event.type == RunEventType.AGENT_STARTED
     )
     assert first_agent_event.payload["role"] == AgentRole.COORDINATOR.value
-    assert first_agent_event.message == "Агент coordinator начал работу."
+    assert first_agent_event.message == "Координатор начал разбирать задачу."
 
 
 def test_team_orchestrator_returns_final_composer_text() -> None:

@@ -51,6 +51,10 @@ class AgentProfile:
     display_name: str
     description: str
     system_instruction: str
+    short_description: str = ""
+    personality: str = ""
+    capabilities: tuple[str, ...] = ()
+    default_style: str = ""
     id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 

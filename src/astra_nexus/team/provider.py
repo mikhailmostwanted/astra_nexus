@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
 from astra_nexus.team.models import AgentProfile, AgentResult
+from astra_nexus.team.prompting import AgentPrompt
 
 
 class TeamProviderError(RuntimeError):
@@ -22,5 +23,6 @@ class TeamProvider(ABC):
         profile: AgentProfile,
         user_task: str,
         previous_results: Sequence[AgentResult],
+        prompt: AgentPrompt | None = None,
     ) -> str:
         raise NotImplementedError

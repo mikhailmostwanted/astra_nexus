@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from astra_nexus.team.models import AgentProfile, AgentResult, AgentRole
+from astra_nexus.team.prompting import AgentPrompt
 from astra_nexus.team.provider import TeamProvider, TeamProviderError
 
 
@@ -12,6 +13,7 @@ class FakeProviderCall:
     profile: AgentProfile
     user_task: str
     previous_results_count: int
+    prompt: AgentPrompt | None
 
 
 class FakeTeamProvider(TeamProvider):
@@ -36,12 +38,14 @@ class FakeTeamProvider(TeamProvider):
         profile: AgentProfile,
         user_task: str,
         previous_results: Sequence[AgentResult],
+        prompt: AgentPrompt | None = None,
     ) -> str:
         self.calls.append(
             FakeProviderCall(
                 profile=profile,
                 user_task=user_task,
                 previous_results_count=len(previous_results),
+                prompt=prompt,
             )
         )
         if profile.role == self.fail_on:

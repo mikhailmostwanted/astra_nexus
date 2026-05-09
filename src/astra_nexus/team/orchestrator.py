@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 
 from astra_nexus.team.models import (
     AgentProfile,
@@ -16,7 +17,27 @@ from astra_nexus.team.models import (
     utc_now,
 )
 from astra_nexus.team.profiles import DEFAULT_AGENT_PIPELINE, default_profiles_by_role
+from astra_nexus.team.prompting import AgentContext, TeamPromptBuilder
 from astra_nexus.team.provider import TeamProvider, TeamProviderError
+
+AGENT_STARTED_MESSAGES = {
+    AgentRole.COORDINATOR: "Координатор начал разбирать задачу.",
+    AgentRole.ANALYST: "Аналитик разбирает факты и вводные.",
+    AgentRole.CRITIC: "Критик проверяет слабые места.",
+    AgentRole.EDITOR: "Редактор собирает улучшенную версию.",
+    AgentRole.QA_CONTROLLER: "Контроль качества проверяет результат.",
+    AgentRole.FINAL_COMPOSER: "Финальный сборщик готовит ответ.",
+}
+
+
+AGENT_FINISHED_MESSAGES = {
+    AgentRole.COORDINATOR: "Координатор подготовил план для команды.",
+    AgentRole.ANALYST: "Аналитик подготовил разбор вводных.",
+    AgentRole.CRITIC: "Критик сформулировал замечания.",
+    AgentRole.EDITOR: "Редактор подготовил улучшенную версию.",
+    AgentRole.QA_CONTROLLER: "Контроль качества завершил проверку.",
+    AgentRole.FINAL_COMPOSER: "Финальный сборщик подготовил ответ.",
+}
 
 
 class AsyncTeamOrchestrator:
@@ -26,9 +47,15 @@ class AsyncTeamOrchestrator:
         provider: TeamProvider,
         profiles: Sequence[AgentProfile] | None = None,
         pipeline: Sequence[AgentRole] | None = None,
+        prompt_builder: TeamPromptBuilder | None = None,
+        workspace_path: Path | str | None = None,
+        extra_instructions: Sequence[str] | None = None,
     ) -> None:
         self.provider = provider
         self.pipeline = list(pipeline or DEFAULT_AGENT_PIPELINE)
+        self.prompt_builder = prompt_builder or TeamPromptBuilder()
+        self.workspace_path = Path(workspace_path) if workspace_path is not None else None
+        self.extra_instructions = tuple(extra_instructions or ())
         self.profiles_by_role = default_profiles_by_role()
         if profiles is not None:
             self.profiles_by_role.update({profile.role: profile for profile in profiles})
@@ -77,14 +104,29 @@ class AsyncTeamOrchestrator:
             RunEventType.AGENT_STARTED,
             profile=profile,
             agent_task=agent_task,
-            message=f"Агент {profile.role.value} начал работу.",
+            message=AGENT_STARTED_MESSAGES[profile.role],
         )
 
         try:
+            previous_results = tuple(team_run.results)
+            prompt = self.prompt_builder.build(
+                profile=profile,
+                context=AgentContext(
+                    run_id=team_run.id,
+                    user_task=team_run.user_task,
+                    current_agent_role=profile.role,
+                    current_agent_name=profile.display_name,
+                    previous_results=previous_results,
+                    previous_events=tuple(team_run.events),
+                    workspace_path=self.workspace_path,
+                    extra_instructions=self.extra_instructions,
+                ),
+            )
             content = await self.provider.generate(
                 profile=profile,
                 user_task=team_run.user_task,
-                previous_results=tuple(team_run.results),
+                previous_results=previous_results,
+                prompt=prompt,
             )
         except TeamProviderError as exc:
             self._fail_agent_run(team_run=team_run, agent_task=agent_task, exc=exc)
@@ -99,7 +141,7 @@ class AsyncTeamOrchestrator:
             task_id=agent_task.id,
             profile=profile,
             content=content,
-            metadata={"provider": self.provider.name},
+            metadata={"provider": self.provider.name, "prompt": prompt.as_dict()},
         )
         team_run.results.append(result)
         agent_task.status = AgentTaskStatus.COMPLETED
@@ -109,7 +151,7 @@ class AsyncTeamOrchestrator:
             RunEventType.AGENT_FINISHED,
             profile=profile,
             agent_task=agent_task,
-            message=f"Агент {profile.role.value} завершил работу.",
+            message=AGENT_FINISHED_MESSAGES[profile.role],
             payload={"result_id": result.id, "status": agent_task.status.value},
         )
 
