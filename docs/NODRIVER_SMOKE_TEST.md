@@ -56,8 +56,10 @@ astra-nexus-nodriver-smoke
 - закрывает браузер и освобождает lock.
 
 ChatGPT composer сейчас является ProseMirror/contenteditable-элементом, поэтому smoke
-заполняет его через JavaScript focus, selection, `insertText` и `input/change` events.
-Если вставка не подтвердилась чтением текста из composer, команда вернёт
+заполняет его через общий NoDriver JS-ввод: точный `#prompt-textarea`, focus,
+`beforeinput/input/change`, `insertText`, затем fallback через synthetic paste event и
+`textContent`. Проверка вставки учитывает нормализацию переносов строк внутри
+ProseMirror. Если вставка не подтвердилась чтением текста из composer, команда вернёт
 `prompt_insert_failed` вместо Python traceback.
 
 Успешный вывод содержит:
@@ -84,6 +86,26 @@ response: ...
 
 При ошибке команда печатает `status`, `stage`, `message`, `url`, `selector` и `action`.
 Это помогает понять, проблема в NoDriver/ChatGPT или уже в Telegram task flow.
+
+## Insert probe
+
+Если smoke проходит, а manual ask падает на `prompt_insert_failed`, проверь только
+этап вставки без отправки сообщения:
+
+```bash
+astra-nexus-nodriver-insert-probe "Ответь одним предложением: Astra Nexus online."
+```
+
+Команда открывает ChatGPT, выполняет DOM probe, вставляет текст в composer и проверяет,
+что текст реально появился. Send не нажимается. При ошибке `astra-nexus-nodriver-ask`
+сохраняет подробный отчёт:
+
+```text
+data/debug/nodriver/prompt_insert_failed.json
+```
+
+В отчёте есть текущий URL, title, activeElement, найденный selector, укороченный
+`outerHTML`, DOM probe summary и список способов вставки, которые пробовались.
 
 ## Если smoke падает с prompt_box_not_found
 

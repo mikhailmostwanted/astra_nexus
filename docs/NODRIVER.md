@@ -57,7 +57,13 @@ astra-nexus-nodriver-smoke
 astra-nexus-nodriver-ask "Ответь одним предложением: Astra Nexus online."
 ```
 
-8. Только после успешных smoke и ask запускай API или Telegram bot.
+8. Если ask падает на `prompt_insert_failed`, проверь только вставку без отправки:
+
+```bash
+astra-nexus-nodriver-insert-probe "Ответь одним предложением: Astra Nexus online."
+```
+
+9. Только после успешных smoke и ask запускай API или Telegram bot.
 
 ## Lifecycle и lock
 
@@ -74,7 +80,7 @@ Astra Nexus использует один browser profile:
 ```
 
 В lock хранится PID процесса Astra Nexus, время старта, абсолютный `user_data_dir` и
-контекст команды: `login`, `smoke`, `provider`, `deep_health`.
+контекст команды: `login`, `smoke`, `insert_probe`, `provider`, `deep_health`.
 
 Если lock есть и PID живой, новая команда не открывает ещё одно окно Chrome. Она
 выводит понятную ошибку с PID. Если lock устарел, `clean` или следующий управляемый
@@ -158,6 +164,15 @@ action: ...
 ```
 
 Это основной способ отделить проблему ChatGPT Web bridge от Telegram task flow.
+При `prompt_insert_failed` команда сохраняет подробный отчёт в
+`data/debug/nodriver/prompt_insert_failed.json`: URL, title, activeElement,
+найденный selector, укороченный `outerHTML`, DOM probe summary и попытки вставки.
+
+Для проверки одного этапа вставки без отправки сообщения используй:
+
+```bash
+astra-nexus-nodriver-insert-probe "тестовый текст"
+```
 
 ## DOM probe и проверка входа
 

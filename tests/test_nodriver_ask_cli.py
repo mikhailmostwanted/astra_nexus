@@ -1,7 +1,14 @@
 import asyncio
+import json
+from pathlib import Path
 
+import astra_nexus.brain.nodriver.ask as ask_module
 from astra_nexus.brain.nodriver.ask import run
-from astra_nexus.brain.nodriver.exceptions import NoDriverPromptBoxNotFoundError
+from astra_nexus.brain.nodriver.exceptions import (
+    NoDriverPromptBoxNotFoundError,
+    NoDriverPromptInsertFailedError,
+)
+from astra_nexus.config.settings import Settings
 
 
 class FailingProvider:
@@ -22,6 +29,24 @@ class OkProvider:
         return Response()
 
 
+class PromptInsertFailingProvider:
+    async def ask(self, agent_id: str, prompt: str, context: dict | None = None):
+        raise NoDriverPromptInsertFailedError(
+            "Не удалось вставить prompt в поле ввода ChatGPT.",
+            stage="chatgpt.prompt.insert.started",
+            url="https://chatgpt.com/",
+            page_title="ChatGPT",
+            selector="#prompt-textarea",
+            details={
+                "selector": "#prompt-textarea",
+                "activeElement": {"tagName": "div", "id": "prompt-textarea"},
+                "outerHTML": '<div id="prompt-textarea" role="textbox"></div>',
+                "dom_probe_summary": {"ready_state": "complete", "candidate_count": 13},
+                "attempts": [{"method": "exec_command_insert_text", "ok": False}],
+            },
+        )
+
+
 def test_nodriver_ask_cli_prints_structured_error(capsys) -> None:
     exit_code = asyncio.run(run(["Привет"], provider=FailingProvider()))
 
@@ -30,6 +55,36 @@ def test_nodriver_ask_cli_prints_structured_error(capsys) -> None:
     assert "status: prompt_box_not_found" in output
     assert "stage: chatgpt.prompt_box.search.started" in output
     assert "message: Поле ввода ChatGPT не найдено." in output
+
+
+def test_nodriver_ask_cli_writes_prompt_insert_debug_report(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setattr(
+        ask_module,
+        "load_settings",
+        lambda: Settings(_env_file=None, data_dir=tmp_path),
+    )
+
+    exit_code = asyncio.run(run(["Привет"], provider=PromptInsertFailingProvider()))
+
+    output = capsys.readouterr().out
+    report_path = tmp_path / "debug/nodriver/prompt_insert_failed.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert exit_code == 1
+    assert "debug_report:" in output
+    assert payload["error_code"] == "prompt_insert_failed"
+    assert payload["url"] == "https://chatgpt.com/"
+    assert payload["page_title"] == "ChatGPT"
+    assert payload["selector"] == "#prompt-textarea"
+    assert payload["activeElement"]["id"] == "prompt-textarea"
+    assert payload["dom_probe_summary"]["candidate_count"] == 13
+    assert payload["attempts"][0]["method"] == "exec_command_insert_text"
+    assert payload["details"]["activeElement"]["id"] == "prompt-textarea"
+    assert payload["details"]["dom_probe_summary"]["candidate_count"] == 13
+    assert payload["details"]["attempts"][0]["method"] == "exec_command_insert_text"
 
 
 def test_nodriver_ask_cli_prints_answer(capsys) -> None:

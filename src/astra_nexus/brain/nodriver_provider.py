@@ -156,6 +156,11 @@ class NoDriverProvider(BrainProvider):
                 "candidate_count",
                 "selectors_tried",
                 "visible_candidates",
+                "activeElement",
+                "outerHTML",
+                "dom_probe_summary",
+                "attempts",
+                "method",
             ):
                 if key in exc.details:
                     payload[key] = exc.details[key]

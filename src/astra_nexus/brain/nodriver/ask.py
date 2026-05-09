@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
-from astra_nexus.brain.nodriver.exceptions import NoDriverProviderError
+from astra_nexus.brain.nodriver.exceptions import (
+    NoDriverPromptInsertFailedError,
+    NoDriverProviderError,
+)
 from astra_nexus.brain.nodriver_provider import NoDriverProvider
-from astra_nexus.config.settings import load_settings
+from astra_nexus.config.settings import Settings, load_settings
 from astra_nexus.utils.logging import configure_logging
 
 
@@ -31,6 +37,7 @@ async def run(argv: list[str] | None = None, *, provider: Any | None = None) -> 
         )
     except NoDriverProviderError as exc:
         error = exc
+        debug_report_path = _write_prompt_insert_debug_report(settings, exc)
         print(f"status: {exc.error_code}")
         print(f"stage: {exc.stage or 'unknown'}")
         print(f"message: {exc}")
@@ -47,6 +54,8 @@ async def run(argv: list[str] | None = None, *, provider: Any | None = None) -> 
         ):
             if key in exc.details:
                 print(f"{key}: {exc.details[key]}")
+        if debug_report_path is not None:
+            print(f"debug_report: {debug_report_path}")
         print(f"action: {exc.action}")
         return_code = 1
     else:
@@ -63,6 +72,40 @@ async def run(argv: list[str] | None = None, *, provider: Any | None = None) -> 
             await session.stop()
 
     return return_code
+
+
+def _write_prompt_insert_debug_report(
+    settings: Settings,
+    exc: NoDriverProviderError,
+) -> Path | None:
+    if not isinstance(exc, NoDriverPromptInsertFailedError):
+        return None
+
+    path = (
+        Path(settings.data_dir).expanduser().resolve()
+        / "debug"
+        / "nodriver"
+        / "prompt_insert_failed.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "error_code": exc.error_code,
+        "stage": exc.stage,
+        "message": str(exc),
+        "url": exc.url,
+        "page_title": exc.page_title,
+        "selector": exc.selector,
+        "details": exc.details,
+    }
+    for key in ("activeElement", "outerHTML", "dom_probe_summary", "attempts", "method"):
+        if key in exc.details:
+            payload[key] = exc.details[key]
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    return path
 
 
 def main() -> None:

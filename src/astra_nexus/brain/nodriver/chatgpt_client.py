@@ -276,6 +276,7 @@ class ChatGPTClient:
         details = await self._insert_prompt_with_js(tab, prompt)
         if details.get("ok"):
             return details
+        details = await self._prompt_insert_failure_details(tab, details)
         raise NoDriverPromptInsertFailedError(
             "Не удалось вставить prompt в поле ввода ChatGPT.",
             stage="chatgpt.prompt.insert.started",
@@ -284,6 +285,19 @@ class ChatGPTClient:
             selector=", ".join(PROMPT_INPUT_SELECTORS),
             details=details,
         )
+
+    async def _prompt_insert_failure_details(
+        self,
+        tab: Any,
+        details: dict[str, Any],
+    ) -> dict[str, Any]:
+        enriched = dict(details)
+        enriched.setdefault("selector", ", ".join(PROMPT_INPUT_SELECTORS))
+        enriched["url"] = await self.session.current_url()
+        enriched["page_title"] = await self.session.current_title()
+        if "dom_probe_summary" not in enriched:
+            enriched["dom_probe_summary"] = await self._page_diagnostics(tab)
+        return enriched
 
     async def _insert_prompt_with_js(self, tab: Any, prompt: str) -> dict[str, Any]:
         script = self._build_prompt_insert_script(prompt)
@@ -328,6 +342,14 @@ class ChatGPTClient:
     );
   }}
 
+  function redactedSample(value, limit = 2000) {{
+    return String(value || '')
+      .replace(/sk-[A-Za-z0-9_-]{{12,}}/g, '[redacted-openai-key]')
+      .replace(/Bearer\\s+[A-Za-z0-9._-]+/gi, 'Bearer [redacted]')
+      .replace(/[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/g, '[redacted-jwt]')
+      .slice(0, limit);
+  }}
+
   function textOf(node) {{
     if (!node) {{
       return '';
@@ -336,6 +358,102 @@ class ChatGPTClient:
       return node.value || '';
     }}
     return node.innerText || node.textContent || '';
+  }}
+
+  function normalizeText(value) {{
+    return String(value || '')
+      .replace(/\\r\\n/g, '\\n')
+      .replace(/\\u00a0/g, ' ')
+      .replace(/\\u200b/g, '')
+      .replace(/[ \\t]+\\n/g, '\\n')
+      .replace(/\\n[ \\t]+/g, '\\n')
+      .replace(/[ \\t]{{2,}}/g, ' ')
+      .trim();
+  }}
+
+  function linesInOrder(visibleText, expectedText) {{
+    const visibleNormalized = normalizeText(visibleText);
+    const expectedLines = normalizeText(expectedText)
+      .split('\\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (expectedLines.length === 0) {{
+      return visibleNormalized.length === 0;
+    }}
+    let cursor = 0;
+    for (const line of expectedLines) {{
+      const index = visibleNormalized.indexOf(line, cursor);
+      if (index < 0) {{
+        return false;
+      }}
+      cursor = index + line.length;
+    }}
+    return true;
+  }}
+
+  function matchInsertedText(visibleText) {{
+    const normalizedVisible = normalizeText(visibleText);
+    const normalizedPrompt = normalizeText(prompt);
+    if (normalizedVisible === normalizedPrompt) {{
+      return {{
+        ok: true,
+        reason: 'text_matches_exact_normalized',
+        normalizedVisible,
+        normalizedPrompt,
+      }};
+    }}
+    if (linesInOrder(visibleText, prompt)) {{
+      return {{
+        ok: true,
+        reason: 'text_matches_after_dom_normalization',
+        normalizedVisible,
+        normalizedPrompt,
+      }};
+    }}
+    return {{
+      ok: false,
+      reason: 'text_not_visible_after_insert',
+      normalizedVisible,
+      normalizedPrompt,
+    }};
+  }}
+
+  function describeElement(node) {{
+    if (!node) {{
+      return null;
+    }}
+    const rect = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+    return {{
+      tagName: (node.tagName || '').toLowerCase(),
+      id: node.id || '',
+      role: node.getAttribute ? node.getAttribute('role') || '' : '',
+      dataTestid: node.getAttribute ? node.getAttribute('data-testid') || '' : '',
+      className: typeof node.className === 'string' ? node.className.slice(0, 160) : '',
+      isContentEditable: Boolean(node.isContentEditable),
+      width: rect ? Math.round(rect.width) : 0,
+      height: rect ? Math.round(rect.height) : 0,
+    }};
+  }}
+
+  function describeActiveElement() {{
+    return describeElement(document.activeElement);
+  }}
+
+  function outerHTMLSample(node) {{
+    return redactedSample(node && node.outerHTML ? node.outerHTML : '', 2000);
+  }}
+
+  function dispatchBeforeInput(node, inputType) {{
+    try {{
+      node.dispatchEvent(
+        new InputEvent('beforeinput', {{
+          bubbles: true,
+          cancelable: true,
+          inputType,
+          data: prompt,
+        }})
+      );
+    }} catch (_error) {{}}
   }}
 
   function dispatchTextEvents(node) {{
@@ -354,21 +472,76 @@ class ChatGPTClient:
     node.dispatchEvent(new Event('change', {{ bubbles: true }}));
   }}
 
-  const target = selectors
+  function dispatchKeyboardPasteHint(node) {{
+    try {{
+      node.dispatchEvent(
+        new KeyboardEvent('keydown', {{
+          bubbles: true,
+          cancelable: true,
+          key: 'v',
+          code: 'KeyV',
+          metaKey: true,
+        }})
+      );
+      node.dispatchEvent(
+        new KeyboardEvent('keyup', {{
+          bubbles: true,
+          cancelable: true,
+          key: 'v',
+          code: 'KeyV',
+          metaKey: true,
+        }})
+      );
+    }} catch (_error) {{}}
+  }}
+
+  function clearEditable(node) {{
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    if (selection) {{
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }}
+    const deleted = document.execCommand('delete', false, null);
+    if (!deleted && textOf(node)) {{
+      node.textContent = '';
+    }}
+  }}
+
+  function snapshot(node, method, extra = {{}}) {{
+    const visibleText = textOf(node);
+    const match = matchInsertedText(visibleText);
+    return {{
+      method,
+      ok: match.ok,
+      reason: match.reason,
+      textLength: visibleText.length,
+      visibleText: redactedSample(visibleText, 2000),
+      normalizedVisible: redactedSample(match.normalizedVisible, 2000),
+      expectedLength: prompt.length,
+      ...extra,
+    }};
+  }}
+
+  const found = selectors
     .map((selector) => {{
       try {{
-        return document.querySelector(selector);
+        return {{ selector, node: document.querySelector(selector) }};
       }} catch (_error) {{
         return null;
       }}
     }})
-    .find((node) => node && visible(node));
+    .find((entry) => entry && entry.node && visible(entry.node));
+  const target = found ? found.node : null;
+  const matchedSelector = found ? found.selector : selectors.join(', ');
 
   if (!target) {{
     return {{
       ok: false,
       error: 'prompt_element_not_found',
       selector: selectors.join(', '),
+      activeElement: describeActiveElement(),
     }};
   }}
 
@@ -379,6 +552,7 @@ class ChatGPTClient:
     tagName === 'textarea' ||
     (tagName === 'input' && ['text', 'search', ''].includes(target.type || ''));
   const isContentEditable = Boolean(target.isContentEditable);
+  const attempts = [];
 
   if (isTextInput) {{
     const prototype = tagName === 'textarea'
@@ -390,21 +564,44 @@ class ChatGPTClient:
     }} else {{
       target.value = prompt;
     }}
+    dispatchBeforeInput(target, 'insertText');
     dispatchTextEvents(target);
+    attempts.push(snapshot(target, 'native_value_setter'));
   }} else if (isContentEditable) {{
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(target);
-    if (selection) {{
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }}
-    document.execCommand('delete', false, null);
+    clearEditable(target);
+    dispatchBeforeInput(target, 'insertText');
     const inserted = document.execCommand('insertText', false, prompt);
-    if (!inserted) {{
-      target.textContent = prompt;
-    }}
     dispatchTextEvents(target);
+    attempts.push(snapshot(target, 'exec_command_insert_text', {{ inserted }}));
+
+    if (!attempts[attempts.length - 1].ok) {{
+      clearEditable(target);
+      dispatchKeyboardPasteHint(target);
+      let dispatched = false;
+      let pasteError = '';
+      try {{
+        const data = new DataTransfer();
+        data.setData('text/plain', prompt);
+        const event = new ClipboardEvent('paste', {{
+          bubbles: true,
+          cancelable: true,
+          clipboardData: data,
+        }});
+        dispatched = target.dispatchEvent(event);
+      }} catch (error) {{
+        pasteError = error && error.message ? error.message : String(error);
+      }}
+      dispatchTextEvents(target);
+      attempts.push(snapshot(target, 'synthetic_clipboard_paste', {{ dispatched, pasteError }}));
+    }}
+
+    if (!attempts[attempts.length - 1].ok) {{
+      clearEditable(target);
+      dispatchBeforeInput(target, 'insertText');
+      target.textContent = prompt;
+      dispatchTextEvents(target);
+      attempts.push(snapshot(target, 'text_content_input_events'));
+    }}
     target.focus();
   }} else {{
     return {{
@@ -414,22 +611,31 @@ class ChatGPTClient:
       id: target.id || '',
       role,
       isContentEditable,
-      selector: selectors.join(', '),
+      selector: matchedSelector,
+      activeElement: describeActiveElement(),
+      outerHTML: outerHTMLSample(target),
     }};
   }}
 
   const visibleText = textOf(target);
-  const ok = visibleText === prompt || visibleText.trim() === prompt.trim();
+  const match = matchInsertedText(visibleText);
+  const bestAttempt = attempts.find((attempt) => attempt.ok) || attempts[attempts.length - 1];
   return {{
-    ok,
+    ok: match.ok,
+    error: match.ok ? null : match.reason,
+    method: bestAttempt ? bestAttempt.method : null,
+    attempts,
     textLength: visibleText.length,
-    visibleText,
+    visibleText: redactedSample(visibleText, 2000),
+    normalizedVisible: redactedSample(match.normalizedVisible, 2000),
     expectedLength: prompt.length,
     tagName,
     id: target.id || '',
     role,
     isContentEditable,
-    selector: selectors.join(', '),
+    selector: matchedSelector,
+    activeElement: describeActiveElement(),
+    outerHTML: outerHTMLSample(target),
   }};
 }})()
 """
