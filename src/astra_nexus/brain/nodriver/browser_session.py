@@ -44,21 +44,26 @@ class BrowserSession:
         if self.browser is not None:
             return self.browser
 
-        self.lifecycle.acquire()
         try:
             start_browser = self._start_browser or self._load_nodriver_start()
             kwargs = self.build_start_kwargs(start_browser)
         except Exception:
-            self.lifecycle.release()
             raise
 
         last_error: Exception | None = None
-        for attempt in range(1, self.settings.nodriver_start_retry_attempts + 1):
+        cleanup_left_profile_locked = False
+        max_attempts = max(1, self.settings.nodriver_start_retry_attempts)
+        for attempt in range(1, max_attempts + 1):
+            previous_profile_process_pids: set[int] = set()
             try:
+                self.lifecycle.acquire()
+                previous_profile_process_pids = {
+                    process.pid for process in self.lifecycle.inspect().live_profile_processes
+                }
                 logger.info(
                     "Запуск NoDriver browser, попытка %s/%s, profile: %s",
                     attempt,
-                    self.settings.nodriver_start_retry_attempts,
+                    max_attempts,
                     self.user_data_dir,
                 )
                 browser = start_browser(**kwargs)
@@ -69,15 +74,34 @@ class BrowserSession:
                     )
                 self.browser = browser
                 return self.browser
+            except (KeyboardInterrupt, asyncio.CancelledError):
+                self._cleanup_failed_start(previous_profile_process_pids)
+                raise
             except NoDriverProfileLockedError:
                 raise
             except Exception as exc:
                 last_error = exc
                 logger.warning("NoDriver browser start failed: %s", exc)
-                if attempt < self.settings.nodriver_start_retry_attempts:
-                    await asyncio.sleep(self.settings.nodriver_start_retry_delay_seconds)
+                cleanup_report = self._cleanup_failed_start(previous_profile_process_pids)
+                if cleanup_report.terminated_profile_processes:
+                    logger.info(
+                        "Terminated Chrome processes from failed NoDriver start: %s",
+                        ", ".join(
+                            str(process.pid)
+                            for process in cleanup_report.terminated_profile_processes
+                        ),
+                    )
+                if cleanup_report.removed_chrome_lock_files:
+                    logger.info(
+                        "Removed stale Chrome profile lock files after failed start: %s",
+                        ", ".join(cleanup_report.removed_chrome_lock_files),
+                    )
+                if cleanup_report.live_profile_processes:
+                    cleanup_left_profile_locked = True
+                    break
+                if attempt < max_attempts:
+                    await asyncio.sleep(self._start_retry_backoff_seconds())
 
-        self.lifecycle.release()
         if isinstance(last_error, TimeoutError):
             raise NoDriverChromeStartTimeoutError(
                 timeout_seconds=self.settings.nodriver_start_timeout_seconds
@@ -85,7 +109,13 @@ class BrowserSession:
         message = "Failed to connect to browser"
         if last_error is not None:
             message = f"{message}: {last_error}"
-        raise NoDriverBrowserConnectError(message) from last_error
+        action = (
+            "выполни astra-nexus-nodriver-clean, закрой оставшийся Chrome PID "
+            "и повтори astra-nexus-nodriver-smoke"
+            if cleanup_left_profile_locked
+            else "повтори команду; Astra Nexus уже очистил lock-файлы между попытками"
+        )
+        raise NoDriverBrowserConnectError(message, action=action) from last_error
 
     def build_start_kwargs(self, start_browser: Callable[..., Any] | None = None) -> dict[str, Any]:
         start_browser = start_browser or self._start_browser or self._load_nodriver_start()
@@ -107,6 +137,18 @@ class BrowserSession:
         elif self._supports_kwarg(start_browser, "no_sandbox"):
             kwargs["no_sandbox"] = self.settings.nodriver_no_sandbox
         return kwargs
+
+    def _start_retry_backoff_seconds(self) -> float:
+        return max(0.0, float(self.settings.nodriver_start_retry_backoff_seconds))
+
+    def _cleanup_failed_start(self, previous_profile_process_pids: set[int]) -> Any:
+        return self.lifecycle.cleanup_after_start_failure(
+            previous_profile_process_pids=previous_profile_process_pids,
+            terminate_grace_seconds=max(
+                0.0,
+                float(self.settings.nodriver_after_terminate_grace_seconds),
+            ),
+        )
 
     def _load_nodriver_start(self) -> Callable[..., Any]:
         try:
@@ -189,9 +231,23 @@ class BrowserSession:
         if self.browser is None:
             self.lifecycle.release()
             return
+        browser = self.browser
         try:
-            self.browser.stop()
+            await self._shutdown_browser(browser)
         finally:
             self.browser = None
             self.tab = None
             self.lifecycle.release()
+
+    async def _shutdown_browser(self, browser: Any) -> None:
+        for method_name in ("stop", "close"):
+            method = getattr(browser, method_name, None)
+            if method is None:
+                continue
+            try:
+                result = method()
+                if inspect.isawaitable(result):
+                    await result
+                return
+            except Exception as exc:
+                logger.warning("NoDriver browser %s failed: %s", method_name, exc)

@@ -140,3 +140,79 @@ def test_clean_does_not_remove_chrome_locks_when_profile_has_live_process(
 
     assert report.live_profile_processes[0].pid == 12345
     assert lock_file.exists()
+
+
+def test_cleanup_after_start_failure_releases_owned_lock_and_removes_chrome_locks(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    manager = NoDriverLifecycleManager(
+        settings,
+        context="provider",
+        find_profile_processes=lambda _: [],
+    )
+    manager.acquire()
+    for filename in CHROME_LOCK_FILES:
+        (manager.user_data_dir / filename).write_text("lock", encoding="utf-8")
+
+    report = manager.cleanup_after_start_failure()
+
+    assert manager.read_lock() is None
+    assert sorted(report.removed_chrome_lock_files) == sorted(CHROME_LOCK_FILES)
+    assert manager.user_data_dir.exists()
+
+
+def test_cleanup_after_start_failure_keeps_chrome_locks_for_live_profile_process(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    live_processes: list[ProcessInfo] = []
+    manager = NoDriverLifecycleManager(
+        settings,
+        context="provider",
+        find_profile_processes=lambda _: live_processes,
+    )
+    manager.acquire()
+    lock_file = manager.user_data_dir / "SingletonLock"
+    lock_file.write_text("lock", encoding="utf-8")
+    live_processes.append(ProcessInfo(pid=12345, command="Chrome --user-data-dir=/tmp/profile"))
+
+    report = manager.cleanup_after_start_failure()
+
+    assert manager.read_lock() is None
+    assert report.live_profile_processes[0].pid == 12345
+    assert lock_file.exists()
+
+
+def test_cleanup_after_start_failure_terminates_only_new_profile_processes(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    live_pids = {100, 200}
+    terminated_pids: list[int] = []
+    manager = NoDriverLifecycleManager(
+        settings,
+        context="provider",
+        is_pid_alive=lambda pid: pid in live_pids,
+        find_profile_processes=lambda _: [
+            ProcessInfo(pid=pid, command="Chrome --user-data-dir=/tmp/profile")
+            for pid in sorted(live_pids)
+        ],
+        terminate_process=lambda pid: (terminated_pids.append(pid), live_pids.discard(pid)),
+    )
+    manager.user_data_dir.mkdir(parents=True)
+    (manager.user_data_dir / "SingletonSocket").write_text("lock", encoding="utf-8")
+
+    report = manager.cleanup_after_start_failure(
+        previous_profile_process_pids={100},
+        terminate_grace_seconds=0,
+    )
+
+    assert terminated_pids == [200]
+    assert report.terminated_profile_processes == [
+        ProcessInfo(pid=200, command="Chrome --user-data-dir=/tmp/profile")
+    ]
+    assert report.live_profile_processes == [
+        ProcessInfo(pid=100, command="Chrome --user-data-dir=/tmp/profile")
+    ]
+    assert (manager.user_data_dir / "SingletonSocket").exists()

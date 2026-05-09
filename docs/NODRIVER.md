@@ -17,6 +17,9 @@ NODRIVER_RESPONSE_TIMEOUT_SECONDS=180
 NODRIVER_PAGE_LOAD_TIMEOUT_SECONDS=60
 NODRIVER_KEEP_BROWSER_OPEN_ON_ERROR=false
 NODRIVER_START_TIMEOUT_SECONDS=90
+NODRIVER_START_RETRIES=3
+NODRIVER_START_RETRY_DELAY_SECONDS=2
+NODRIVER_AFTER_TERMINATE_GRACE_SECONDS=2
 NODRIVER_NO_SANDBOX=false
 NODRIVER_BROWSER_EXECUTABLE_PATH=
 NODRIVER_AGENT_MODE=single_profile
@@ -26,6 +29,14 @@ NODRIVER_SCREENSHOTS_DIR=./data/debug/screenshots
 
 Если `NODRIVER_BROWSER_EXECUTABLE_PATH` пустой, NoDriver сам ищет Chrome/Chromium.
 Если путь задан, он передаётся в NoDriver как абсолютный путь.
+`NODRIVER_START_TIMEOUT_SECONDS` передаётся в NoDriver, но сам NoDriver иногда
+возвращает `Failed to connect to browser` раньше этого timeout. Поэтому вокруг старта
+есть внешний retry-цикл: `NODRIVER_START_RETRIES` и
+`NODRIVER_START_RETRY_DELAY_SECONDS`. Если failed start успел поднять Chrome, Astra
+Nexus завершает только процесс, появившийся в этой попытке, ждёт
+`NODRIVER_AFTER_TERMINATE_GRACE_SECONDS`, отпускает свой runtime lock и безопасно
+удаляет только `SingletonLock`, `SingletonSocket`, `SingletonCookie` и
+`DevToolsActivePort`, если профиль уже свободен.
 
 ## Правильный порядок
 

@@ -9,16 +9,35 @@ from astra_nexus.brain.nodriver.exceptions import (
     NoDriverBrowserConnectError,
     NoDriverChatGPTUINotReadyError,
 )
+from astra_nexus.brain.nodriver.lifecycle import NoDriverLifecycleManager, ProcessInfo
 from astra_nexus.config.settings import Settings
 
 
 class FakeBrowser:
     def __init__(self) -> None:
         self.get_calls: list[str] = []
+        self.stopped = False
 
     async def get(self, url: str) -> object:
         self.get_calls.append(url)
         return FakeTab(url)
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+class AsyncStopBrowser(FakeBrowser):
+    async def stop(self) -> None:
+        self.stopped = True
+
+
+class CloseOnlyBrowser(FakeBrowser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
 
 
 class FakeTab:
@@ -98,6 +117,200 @@ def test_browser_session_maps_repeated_start_failures_to_browser_connect_failed(
     assert attempts == 2
     assert exc.value.status == "browser_connect_failed"
     assert "Failed to connect to browser" in str(exc.value)
+
+
+def test_browser_session_cleans_runtime_and_chrome_locks_between_start_retries(
+    tmp_path: Path,
+) -> None:
+    attempts = 0
+    profile = tmp_path / "profile"
+
+    async def flaky_start(**_: object) -> FakeBrowser:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            for filename in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+                (profile / filename).write_text("lock", encoding="utf-8")
+            raise RuntimeError("Failed to connect to browser")
+        return FakeBrowser()
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=profile,
+        nodriver_start_retry_attempts=2,
+        nodriver_start_retry_delay_seconds=0,
+    )
+    session = BrowserSession(settings=settings, start_browser=flaky_start)
+
+    browser = asyncio.run(session.start())
+
+    assert isinstance(browser, FakeBrowser)
+    assert attempts == 2
+    assert session.lifecycle.read_lock() is not None
+    for filename in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        assert not (profile / filename).exists()
+
+
+def test_browser_session_terminates_own_failed_start_process_before_retry(
+    tmp_path: Path,
+) -> None:
+    attempts = 0
+    profile = tmp_path / "profile"
+    live_pids: set[int] = set()
+    terminated_pids: list[int] = []
+
+    async def flaky_start(**_: object) -> FakeBrowser:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            live_pids.add(4242)
+            (profile / "SingletonLock").write_text("lock", encoding="utf-8")
+            raise RuntimeError("Failed to connect to browser")
+        return FakeBrowser()
+
+    def find_processes(_profile: Path) -> list[ProcessInfo]:
+        return [
+            ProcessInfo(pid=pid, command=f"Chrome --user-data-dir={profile}")
+            for pid in sorted(live_pids)
+        ]
+
+    def terminate_process(pid: int) -> None:
+        terminated_pids.append(pid)
+        live_pids.discard(pid)
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=profile,
+        nodriver_start_retry_attempts=2,
+        nodriver_start_retry_delay_seconds=0,
+        nodriver_after_terminate_grace_seconds=0,
+    )
+    lifecycle = NoDriverLifecycleManager(
+        settings,
+        context="provider",
+        find_profile_processes=find_processes,
+        is_pid_alive=lambda pid: pid in live_pids,
+        terminate_process=terminate_process,
+    )
+    session = BrowserSession(settings=settings, start_browser=flaky_start, lifecycle=lifecycle)
+
+    browser = asyncio.run(session.start())
+
+    assert isinstance(browser, FakeBrowser)
+    assert attempts == 2
+    assert terminated_pids == [4242]
+    assert live_pids == set()
+    assert session.lifecycle.read_lock() is not None
+    assert not (profile / "SingletonLock").exists()
+
+
+def test_browser_session_reports_browser_connect_failed_when_own_process_stays_locked(
+    tmp_path: Path,
+) -> None:
+    profile = tmp_path / "profile"
+    live_pids: set[int] = set()
+
+    async def failing_start(**_: object) -> FakeBrowser:
+        live_pids.add(5252)
+        (profile / "SingletonLock").write_text("lock", encoding="utf-8")
+        raise RuntimeError("Failed to connect to browser")
+
+    def find_processes(_profile: Path) -> list[ProcessInfo]:
+        return [
+            ProcessInfo(pid=pid, command=f"Chrome --user-data-dir={profile}")
+            for pid in sorted(live_pids)
+        ]
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=profile,
+        nodriver_start_retry_attempts=2,
+        nodriver_start_retry_delay_seconds=0,
+        nodriver_after_terminate_grace_seconds=0,
+    )
+    lifecycle = NoDriverLifecycleManager(
+        settings,
+        context="provider",
+        find_profile_processes=find_processes,
+        is_pid_alive=lambda pid: pid in live_pids,
+        terminate_process=lambda _pid: None,
+        kill_process=lambda _pid: None,
+    )
+    session = BrowserSession(settings=settings, start_browser=failing_start, lifecycle=lifecycle)
+
+    with pytest.raises(NoDriverBrowserConnectError) as exc:
+        asyncio.run(session.start())
+
+    assert exc.value.status == "browser_connect_failed"
+    assert "astra-nexus-nodriver-clean" in exc.value.action
+    assert session.lifecycle.read_lock() is None
+    assert (profile / "SingletonLock").exists()
+
+
+def test_browser_session_releases_lock_after_all_start_retries_fail(tmp_path: Path) -> None:
+    async def failing_start(**_: object) -> FakeBrowser:
+        (tmp_path / "profile/SingletonLock").write_text("lock", encoding="utf-8")
+        raise RuntimeError("Failed to connect to browser")
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_start_retry_attempts=1,
+        nodriver_start_retry_delay_seconds=0,
+    )
+    session = BrowserSession(settings=settings, start_browser=failing_start)
+
+    with pytest.raises(NoDriverBrowserConnectError):
+        asyncio.run(session.start())
+
+    assert session.lifecycle.read_lock() is None
+    assert not (tmp_path / "profile/SingletonLock").exists()
+
+
+def test_browser_session_releases_lock_when_start_is_cancelled(tmp_path: Path) -> None:
+    async def cancelled_start(**_: object) -> FakeBrowser:
+        raise asyncio.CancelledError()
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_start_retry_attempts=2,
+        nodriver_start_retry_delay_seconds=0,
+    )
+    session = BrowserSession(settings=settings, start_browser=cancelled_start)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(session.start())
+
+    assert session.lifecycle.read_lock() is None
+
+
+def test_browser_session_awaits_async_stop_and_releases_lock(tmp_path: Path) -> None:
+    browser = AsyncStopBrowser()
+    settings = Settings(nodriver_user_data_dir=tmp_path / "profile")
+    session = BrowserSession(settings=settings, start_browser=lambda **_: browser)
+
+    asyncio.run(session.start())
+    asyncio.run(session.stop())
+
+    assert browser.stopped is True
+    assert session.lifecycle.read_lock() is None
+
+
+def test_browser_session_uses_close_fallback_and_releases_lock(tmp_path: Path) -> None:
+    class StopFailingBrowser(CloseOnlyBrowser):
+        def stop(self) -> None:
+            raise RuntimeError("stop failed")
+
+    browser = StopFailingBrowser()
+    settings = Settings(nodriver_user_data_dir=tmp_path / "profile")
+    session = BrowserSession(settings=settings, start_browser=lambda **_: browser)
+
+    asyncio.run(session.start())
+    asyncio.run(session.stop())
+
+    assert browser.closed is True
+    assert session.lifecycle.read_lock() is None
 
 
 def test_browser_session_ensure_chatgpt_page_does_not_reload_existing_chatgpt_tab(

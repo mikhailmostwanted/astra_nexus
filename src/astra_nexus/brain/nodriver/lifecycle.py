@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -91,6 +93,7 @@ class CleanReport:
     invalid_lock_removed: bool
     removed_chrome_lock_files: list[str]
     live_profile_processes: list[ProcessInfo]
+    terminated_profile_processes: list[ProcessInfo] = field(default_factory=list)
 
 
 class NoDriverLifecycleManager:
@@ -101,6 +104,9 @@ class NoDriverLifecycleManager:
         context: str,
         is_pid_alive: Callable[[int], bool] | None = None,
         find_profile_processes: Callable[[Path], list[ProcessInfo]] | None = None,
+        terminate_process: Callable[[int], None] | None = None,
+        kill_process: Callable[[int], None] | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self.settings = settings
         self.context = context
@@ -109,6 +115,9 @@ class NoDriverLifecycleManager:
         self.lock_path = self.runtime_dir / f"{self._profile_lock_name()}.lock"
         self._is_pid_alive = is_pid_alive or pid_is_alive
         self._find_profile_processes = find_profile_processes or find_processes_using_profile
+        self._terminate_process = terminate_process or terminate_process_by_pid
+        self._kill_process = kill_process or kill_process_by_pid
+        self._sleep = sleep or time.sleep
         self._owned_lock: LockInfo | None = None
 
     def acquire(self) -> LockInfo:
@@ -210,6 +219,74 @@ class NoDriverLifecycleManager:
             live_profile_processes=live_processes,
         )
 
+    def cleanup_after_start_failure(
+        self,
+        *,
+        previous_profile_process_pids: set[int] | None = None,
+        terminate_grace_seconds: float = 0,
+    ) -> CleanReport:
+        self.release()
+        terminated_processes = self._terminate_new_profile_processes(
+            previous_profile_process_pids=previous_profile_process_pids,
+            terminate_grace_seconds=terminate_grace_seconds,
+        )
+        report = self.clean()
+        return CleanReport(
+            user_data_dir=report.user_data_dir,
+            lock_path=report.lock_path,
+            lock_info=report.lock_info,
+            lock_pid_alive=report.lock_pid_alive,
+            stale_lock_removed=report.stale_lock_removed,
+            invalid_lock_removed=report.invalid_lock_removed,
+            removed_chrome_lock_files=report.removed_chrome_lock_files,
+            live_profile_processes=report.live_profile_processes,
+            terminated_profile_processes=terminated_processes,
+        )
+
+    def _terminate_new_profile_processes(
+        self,
+        *,
+        previous_profile_process_pids: set[int] | None,
+        terminate_grace_seconds: float,
+    ) -> list[ProcessInfo]:
+        if previous_profile_process_pids is None:
+            return []
+        live_processes = self._find_profile_processes(self.user_data_dir)
+        own_processes = [
+            process
+            for process in live_processes
+            if process.pid not in previous_profile_process_pids and process.pid != os.getpid()
+        ]
+        if not own_processes:
+            return []
+
+        for process in own_processes:
+            self._terminate_process(process.pid)
+        self._wait_for_processes_to_exit(own_processes, terminate_grace_seconds)
+        remaining = {process.pid for process in self._find_profile_processes(self.user_data_dir)}
+        for process in own_processes:
+            if process.pid in remaining:
+                self._kill_process(process.pid)
+        self._wait_for_processes_to_exit(own_processes, terminate_grace_seconds)
+        return own_processes
+
+    def _wait_for_processes_to_exit(
+        self,
+        processes: list[ProcessInfo],
+        timeout_seconds: float,
+    ) -> None:
+        if timeout_seconds <= 0 or not processes:
+            return
+        deadline = time.monotonic() + timeout_seconds
+        process_pids = {process.pid for process in processes}
+        while time.monotonic() < deadline:
+            live_pids = {
+                process.pid for process in self._find_profile_processes(self.user_data_dir)
+            }
+            if not (live_pids & process_pids):
+                return
+            self._sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+
     def read_lock(self) -> LockInfo | None:
         lock_info, _ = self._read_lock_with_state()
         return lock_info
@@ -253,7 +330,7 @@ class NoDriverLifecycleManager:
                 continue
             try:
                 path.unlink()
-            except FileNotFoundError:
+            except (FileNotFoundError, OSError):
                 continue
             removed.append(filename)
         return removed
@@ -269,6 +346,20 @@ def pid_is_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def terminate_process_by_pid(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
+
+
+def kill_process_by_pid(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        return
 
 
 def find_processes_using_profile(user_data_dir: Path) -> list[ProcessInfo]:

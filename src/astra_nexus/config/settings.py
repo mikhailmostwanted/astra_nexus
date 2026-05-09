@@ -129,8 +129,36 @@ class Settings(BaseSettings):
             "NODRIVER_SCREENSHOTS_DIR",
         ),
     )
-    nodriver_start_retry_attempts: int = 3
-    nodriver_start_retry_delay_seconds: float = 2.0
+    nodriver_start_retry_attempts: int = Field(
+        default=3,
+        validation_alias=AliasChoices(
+            "nodriver_start_retry_attempts",
+            "nodriver_start_retries",
+            "ASTRA_NODRIVER_START_RETRY_ATTEMPTS",
+            "NODRIVER_START_RETRY_ATTEMPTS",
+            "ASTRA_NODRIVER_START_RETRIES",
+            "NODRIVER_START_RETRIES",
+        ),
+    )
+    nodriver_start_retry_delay_seconds: float = Field(
+        default=2.0,
+        validation_alias=AliasChoices(
+            "nodriver_start_retry_delay_seconds",
+            "nodriver_start_retry_backoff_seconds",
+            "ASTRA_NODRIVER_START_RETRY_DELAY_SECONDS",
+            "NODRIVER_START_RETRY_DELAY_SECONDS",
+            "ASTRA_NODRIVER_START_RETRY_BACKOFF_SECONDS",
+            "NODRIVER_START_RETRY_BACKOFF_SECONDS",
+        ),
+    )
+    nodriver_after_terminate_grace_seconds: float = Field(
+        default=2.0,
+        validation_alias=AliasChoices(
+            "nodriver_after_terminate_grace_seconds",
+            "ASTRA_NODRIVER_AFTER_TERMINATE_GRACE_SECONDS",
+            "NODRIVER_AFTER_TERMINATE_GRACE_SECONDS",
+        ),
+    )
     log_level: str = Field(
         default="INFO",
         validation_alias=AliasChoices("log_level", "ASTRA_LOG_LEVEL", "LOG_LEVEL"),
@@ -166,6 +194,14 @@ class Settings(BaseSettings):
         if value == "":
             return None
         return value
+
+    @property
+    def nodriver_start_retry_backoff_seconds(self) -> float:
+        return self.nodriver_start_retry_delay_seconds
+
+    @property
+    def nodriver_start_retries(self) -> int:
+        return self.nodriver_start_retry_attempts
 
 
 @lru_cache
