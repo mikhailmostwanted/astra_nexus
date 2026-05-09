@@ -20,6 +20,7 @@ browser-profile/
 browser-data/
 telegram.session*
 data/browser_profiles/
+data/runtime/
 data/debug/
 **/BrowserMetrics*
 **/Crashpad/

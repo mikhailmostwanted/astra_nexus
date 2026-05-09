@@ -1,32 +1,26 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
+from astra_nexus.brain.nodriver.chatgpt_client import ChatGPTClient
 from astra_nexus.brain.nodriver.exceptions import NoDriverProviderError
 from astra_nexus.config.settings import load_settings
 from astra_nexus.utils.logging import configure_logging
 
-logger = logging.getLogger(__name__)
+SMOKE_PROMPT = "Ответь одним предложением: Astra Nexus online."
 
 
 async def amain() -> int:
     settings = load_settings()
     configure_logging(settings.log_level)
-    session = BrowserSession(settings, lifecycle_context="login")
-    print("Astra Nexus NoDriver login")
+    session = BrowserSession(settings, lifecycle_context="smoke")
+    client = ChatGPTClient(settings, session=session)
+
+    print("Astra Nexus NoDriver smoke")
     print(f"Browser profile: {session.user_data_dir}")
     try:
-        await session.open_chatgpt()
-        await asyncio.to_thread(
-            input,
-            "Войди в ChatGPT в открывшемся окне. Когда закончишь, нажми Enter здесь "
-            "для завершения.",
-        )
-    except KeyboardInterrupt:
-        logger.info("Ручная подготовка NoDriver profile остановлена пользователем.")
-        return 130
+        result = await client.ask(SMOKE_PROMPT)
     except NoDriverProviderError as exc:
         print(f"status: {exc.status}")
         print(f"message: {exc}")
@@ -34,8 +28,9 @@ async def amain() -> int:
         return 1
     finally:
         await session.stop()
+
     print("status: ok")
-    print("message: browser profile сохранён")
+    print(f"result: {result}")
     return 0
 
 

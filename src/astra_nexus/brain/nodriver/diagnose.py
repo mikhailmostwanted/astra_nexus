@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import shutil
 import sys
 from pathlib import Path
 
-from astra_nexus.brain.nodriver.browser_session import BrowserSession
-from astra_nexus.brain.nodriver.exceptions import NoDriverProviderError
+from astra_nexus.brain.nodriver.lifecycle import NoDriverLifecycleManager
 from astra_nexus.config.settings import load_settings
 from astra_nexus.utils.logging import configure_logging
 
@@ -37,39 +35,44 @@ def detect_chrome_path(configured_path: Path | None) -> str:
     return "не найден в PATH; NoDriver попробует автообнаружение"
 
 
-async def amain() -> int:
+def main() -> None:
+    raise SystemExit(run())
+
+
+def run() -> int:
     settings = load_settings()
     configure_logging(settings.log_level)
-    session = BrowserSession(settings)
-    user_data_dir = session.user_data_dir
+    lifecycle = NoDriverLifecycleManager(settings, context="diagnose")
+    snapshot = lifecycle.inspect()
+    lock_info = snapshot.lock_info
 
     print("Astra Nexus NoDriver diagnose")
     print(f"Python: {sys.version.split()[0]}")
+    print(f"provider: {settings.brain_provider}")
     print(f"Chrome: {detect_chrome_path(settings.nodriver_browser_executable_path)}")
-    print(f"user_data_dir: {user_data_dir}")
-    print(f"profile_exists: {user_data_dir.exists()}")
+    print(f"user_data_dir: {snapshot.user_data_dir}")
+    print(f"profile_exists: {snapshot.user_data_dir_exists}")
+    print(f"lock_file: {snapshot.lock_path}")
+    print(f"lock_exists: {lock_info is not None}")
+    print(f"lock_pid: {lock_info.pid if lock_info else 'none'}")
+    print(f"lock_context: {lock_info.context if lock_info else 'none'}")
+    print(f"lock_pid_alive: {snapshot.lock_pid_alive}")
+    print(f"profile_locked: {snapshot.profile_locked}")
+    print(
+        "live_profile_processes: "
+        + (
+            ", ".join(str(process.pid) for process in snapshot.live_profile_processes)
+            if snapshot.live_profile_processes
+            else "none"
+        )
+    )
     print(f"headless: {settings.nodriver_headless}")
     print(f"no_sandbox: {settings.nodriver_no_sandbox}")
     print(f"start_timeout: {settings.nodriver_start_timeout_seconds}")
-    print("Проверка запуска браузера: about:blank")
-
-    try:
-        await session.open_url("about:blank")
-    except NoDriverProviderError as exc:
-        print(f"status: {exc.status}")
-        print(f"message: {exc}")
-        print(f"action: {exc.action}")
-        return 1
-    finally:
-        await session.stop()
-
-    print("status: ok")
-    print("message: браузер запущен и about:blank открыт")
-    return 0
-
-
-def main() -> None:
-    raise SystemExit(asyncio.run(amain()))
+    print(f"chatgpt_url: {settings.nodriver_chatgpt_url}")
+    print("browser_opened: false")
+    print("message: diagnose не открывает Chrome; для реальной проверки запусти smoke")
+    return 1 if snapshot.profile_locked else 0
 
 
 if __name__ == "__main__":

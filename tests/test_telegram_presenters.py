@@ -121,3 +121,24 @@ def test_render_brain_provider_error_event_without_traceback() -> None:
     assert "требуется ручной вход" in text
     assert "astra-nexus-nodriver-login" in text
     assert "Traceback" not in text
+
+
+def test_render_profile_locked_event_without_traceback() -> None:
+    event = TaskEvent(
+        type="task.failed",
+        task_id="task_123",
+        run_id="run_456",
+        payload={
+            "status": "profile_locked",
+            "message": "Chrome profile занят другим процессом.",
+            "action": "заверши astra-nexus-nodriver-login или выполни astra-nexus-nodriver-clean",
+        },
+    )
+
+    text = render_task_event(event)
+
+    assert text is not None
+    assert "Провайдер мозга недоступен" in text
+    assert "Chrome profile занят" in text
+    assert "astra-nexus-nodriver-clean" in text
+    assert "Traceback" not in text

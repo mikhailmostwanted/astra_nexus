@@ -16,8 +16,10 @@ dependencies = [
 [project.scripts]
 astra-nexus-api = "astra_nexus.main:run_api"
 astra-nexus-bot = "astra_nexus.telegram.run_bot:main"
+astra-nexus-nodriver-clean = "astra_nexus.brain.nodriver.clean:main"
 astra-nexus-nodriver-diagnose = "astra_nexus.brain.nodriver.diagnose:main"
 astra-nexus-nodriver-login = "astra_nexus.brain.nodriver.login:main"
+astra-nexus-nodriver-smoke = "astra_nexus.brain.nodriver.smoke:main"
 
 [project.optional-dependencies]
 dev = [

@@ -89,16 +89,23 @@ NODRIVER_HEADLESS=false
 Перед первым запуском нужно вручную подготовить browser profile:
 
 ```bash
+astra-nexus-nodriver-clean
 astra-nexus-nodriver-login
+astra-nexus-nodriver-smoke
 ```
 
-В открывшемся браузере вручную войди в ChatGPT. Логины, пароли, cookies и browser
-profile остаются только локально в `data/browser_profiles/` и не коммитятся.
-Подробности: [docs/NODRIVER.md](docs/NODRIVER.md).
+В открывшемся браузере вручную войди в ChatGPT, затем нажми Enter в терминале login
+helper. После успешного smoke можно запускать API или Telegram bot с
+`BRAIN_PROVIDER=nodriver`.
 
-Если Chrome стартует, но NoDriver не подключается:
+Логины, пароли, cookies, runtime locks и browser profile остаются только локально в
+`data/` и не коммитятся. Подробности: [docs/NODRIVER.md](docs/NODRIVER.md) и
+[docs/NODRIVER_SMOKE_TEST.md](docs/NODRIVER_SMOKE_TEST.md).
+
+Если Chrome стартует, но NoDriver не подключается или profile занят:
 
 ```bash
+astra-nexus-nodriver-clean
 astra-nexus-nodriver-diagnose
 ```
 

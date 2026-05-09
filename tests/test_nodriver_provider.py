@@ -4,7 +4,9 @@ import pytest
 
 from astra_nexus.brain.nodriver.exceptions import (
     NoDriverBrowserConnectError,
+    NoDriverChromeStartTimeoutError,
     NoDriverLoginRequiredError,
+    NoDriverProfileLockedError,
     NoDriverTimeoutError,
 )
 from astra_nexus.brain.nodriver_provider import NoDriverProvider
@@ -55,4 +57,31 @@ def test_nodriver_provider_maps_browser_connect_failed_error() -> None:
         asyncio.run(provider.ask(agent_id="writer", prompt="Промпт"))
 
     assert exc.value.status == "browser_connect_failed"
-    assert "diagnose" in exc.value.action
+    assert "astra-nexus-nodriver-clean" in exc.value.action
+
+
+def test_nodriver_provider_maps_profile_locked_error() -> None:
+    provider = NoDriverProvider(
+        settings=Settings(brain_provider="nodriver"),
+        client=FailingClient(NoDriverProfileLockedError(pid=12345, context="login")),
+    )
+
+    with pytest.raises(NoDriverProfileLockedError) as exc:
+        asyncio.run(provider.ask(agent_id="writer", prompt="Промпт"))
+
+    assert exc.value.status == "profile_locked"
+    assert "12345" in str(exc.value)
+    assert "astra-nexus-nodriver-clean" in exc.value.action
+
+
+def test_nodriver_provider_maps_chrome_start_timeout_error() -> None:
+    provider = NoDriverProvider(
+        settings=Settings(brain_provider="nodriver"),
+        client=FailingClient(NoDriverChromeStartTimeoutError(timeout_seconds=90)),
+    )
+
+    with pytest.raises(NoDriverChromeStartTimeoutError) as exc:
+        asyncio.run(provider.ask(agent_id="writer", prompt="Промпт"))
+
+    assert exc.value.status == "chrome_start_timeout"
+    assert "90" in str(exc.value)

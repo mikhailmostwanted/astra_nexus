@@ -86,7 +86,9 @@ def render_task_event(event: TaskEvent) -> str | None:
         action = str(event.payload.get("action", "проверь server logs"))
         if status in {
             "browser_connect_failed",
+            "chrome_start_timeout",
             "login_required",
+            "profile_locked",
             "timeout",
             "selector_not_found",
             "unavailable",

@@ -9,9 +9,12 @@ from typing import Any
 
 from astra_nexus.brain.nodriver.exceptions import (
     NoDriverBrowserConnectError,
+    NoDriverChromeStartTimeoutError,
     NoDriverDependencyError,
     NoDriverPageLoadError,
+    NoDriverProfileLockedError,
 )
+from astra_nexus.brain.nodriver.lifecycle import NoDriverLifecycleManager
 from astra_nexus.config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -22,9 +25,15 @@ class BrowserSession:
         self,
         settings: Settings,
         start_browser: Callable[..., Any] | None = None,
+        lifecycle_context: str = "provider",
+        lifecycle: NoDriverLifecycleManager | None = None,
     ) -> None:
         self.settings = settings
-        self.user_data_dir = Path(settings.nodriver_user_data_dir).expanduser().resolve()
+        self.lifecycle = lifecycle or NoDriverLifecycleManager(
+            settings,
+            context=lifecycle_context,
+        )
+        self.user_data_dir = self.lifecycle.user_data_dir
         self._start_browser = start_browser
         self.browser: Any | None = None
         self.tab: Any | None = None
@@ -33,9 +42,13 @@ class BrowserSession:
         if self.browser is not None:
             return self.browser
 
-        self.user_data_dir.mkdir(parents=True, exist_ok=True)
-        start_browser = self._start_browser or self._load_nodriver_start()
-        kwargs = self.build_start_kwargs(start_browser)
+        self.lifecycle.acquire()
+        try:
+            start_browser = self._start_browser or self._load_nodriver_start()
+            kwargs = self.build_start_kwargs(start_browser)
+        except Exception:
+            self.lifecycle.release()
+            raise
 
         last_error: Exception | None = None
         for attempt in range(1, self.settings.nodriver_start_retry_attempts + 1):
@@ -54,12 +67,19 @@ class BrowserSession:
                     )
                 self.browser = browser
                 return self.browser
+            except NoDriverProfileLockedError:
+                raise
             except Exception as exc:
                 last_error = exc
                 logger.warning("NoDriver browser start failed: %s", exc)
                 if attempt < self.settings.nodriver_start_retry_attempts:
                     await asyncio.sleep(self.settings.nodriver_start_retry_delay_seconds)
 
+        self.lifecycle.release()
+        if isinstance(last_error, TimeoutError):
+            raise NoDriverChromeStartTimeoutError(
+                timeout_seconds=self.settings.nodriver_start_timeout_seconds
+            ) from last_error
         message = "Failed to connect to browser"
         if last_error is not None:
             message = f"{message}: {last_error}"
@@ -121,9 +141,11 @@ class BrowserSession:
 
     async def stop(self) -> None:
         if self.browser is None:
+            self.lifecycle.release()
             return
         try:
             self.browser.stop()
         finally:
             self.browser = None
             self.tab = None
+            self.lifecycle.release()
