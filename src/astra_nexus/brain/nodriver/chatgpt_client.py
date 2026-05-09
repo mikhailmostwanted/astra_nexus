@@ -8,8 +8,11 @@ from astra_nexus.brain.nodriver.browser_session import BrowserSession
 from astra_nexus.brain.nodriver.dom_probe import (
     LOGIN_STATE_PROBE_SCRIPT,
     build_prompt_candidate_probe_script,
+    evaluate_script,
+    normalize_dom_probe_payload,
 )
 from astra_nexus.brain.nodriver.exceptions import (
+    NoDriverChatGPTUINotReadyError,
     NoDriverLoginRequiredError,
     NoDriverPromptBoxNotFoundError,
     NoDriverProviderError,
@@ -125,13 +128,13 @@ class ChatGPTClient:
 
     async def _login_state(self, tab: Any) -> dict[str, Any]:
         try:
-            result = await tab.evaluate(LOGIN_STATE_PROBE_SCRIPT)
+            result = await evaluate_script(tab, LOGIN_STATE_PROBE_SCRIPT)
         except Exception:
             return {"login_required": False, "login_ok": False, "reason": "probe_failed"}
-        return dict(result or {})
+        return dict(result) if isinstance(result, dict) else {}
 
     async def _assistant_messages(self, tab: Any) -> list[str]:
-        result = await tab.evaluate(ASSISTANT_MESSAGE_QUERY)
+        result = await evaluate_script(tab, ASSISTANT_MESSAGE_QUERY)
         return list(result or [])
 
     async def _first_selector(
@@ -177,6 +180,7 @@ class ChatGPTClient:
         )
         attempts = 0
         last_summary: dict[str, Any] = {}
+        last_login_state = login_state
 
         while asyncio.get_running_loop().time() <= deadline:
             attempts += 1
@@ -190,6 +194,15 @@ class ChatGPTClient:
             if ready_state != "complete":
                 await self._sleep_until_next_attempt(deadline)
                 continue
+
+            last_login_state = await self._login_state(tab)
+            if last_login_state.get("login_required"):
+                raise NoDriverLoginRequiredError(
+                    stage="chatgpt.login.check.started",
+                    url=await self.session.current_url(),
+                    page_title=await self.session.current_title(),
+                    details=await self._page_diagnostics(tab, login_state=last_login_state),
+                )
 
             last_summary = await self._prompt_candidate_summary(tab)
             marked_selector = last_summary.get("marked_selector")
@@ -216,11 +229,11 @@ class ChatGPTClient:
         details = {
             **last_summary,
             "selectors_tried": PROMPT_INPUT_SELECTORS,
-            "login_state": login_state,
+            "login_state": last_login_state,
             "attempts": attempts,
         }
-        raise NoDriverPromptBoxNotFoundError(
-            "Поле ввода ChatGPT не найдено.",
+        raise NoDriverChatGPTUINotReadyError(
+            "Интерфейс ChatGPT Web не готов: composer не найден, login controls не видны.",
             stage="chatgpt.prompt_box.search.started",
             url=await self.session.current_url(),
             page_title=await self.session.current_title(),
@@ -230,14 +243,14 @@ class ChatGPTClient:
 
     async def _ready_state(self, tab: Any) -> str:
         try:
-            value = await tab.evaluate("document.readyState")
+            value = await evaluate_script(tab, "document.readyState")
         except Exception:
             return "unknown"
         return str(value or "unknown")
 
     async def _prompt_candidate_summary(self, tab: Any) -> dict[str, Any]:
         try:
-            result = await tab.evaluate(build_prompt_candidate_probe_script())
+            result = await evaluate_script(tab, build_prompt_candidate_probe_script())
         except Exception:
             return {
                 "ready_state": "unknown",
@@ -248,7 +261,7 @@ class ChatGPTClient:
                 "visible_candidates": [],
                 "marked_selector": None,
             }
-        return dict(result or {})
+        return normalize_dom_probe_payload(result)
 
     async def _sleep_until_next_attempt(self, deadline: float) -> None:
         remaining = deadline - asyncio.get_running_loop().time()
@@ -309,10 +322,10 @@ class ChatGPTClient:
         login_state: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
-            result = await tab.evaluate(build_prompt_candidate_probe_script())
+            result = await evaluate_script(tab, build_prompt_candidate_probe_script())
         except Exception:
             result = {}
-        diagnostics = dict(result or {})
+        diagnostics = normalize_dom_probe_payload(result)
         if login_state is not None:
             diagnostics["login_state"] = login_state
         return diagnostics

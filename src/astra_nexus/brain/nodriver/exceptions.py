@@ -134,6 +134,15 @@ class NoDriverPromptBoxNotFoundError(NoDriverSelectorNotFoundError):
     )
 
 
+class NoDriverChatGPTUINotReadyError(NoDriverPromptBoxNotFoundError):
+    status = "chatgpt_ui_not_ready"
+    user_message = "интерфейс ChatGPT Web не готов"
+    action = (
+        "проверь страницу ChatGPT, затем запусти astra-nexus-nodriver-dom-probe "
+        "для диагностики текущего DOM"
+    )
+
+
 class NoDriverPageLoadError(NoDriverProviderError):
     status = "unavailable"
     user_message = "страница ChatGPT не загрузилась"

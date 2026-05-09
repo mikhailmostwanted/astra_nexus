@@ -1,5 +1,12 @@
-from astra_nexus.brain.nodriver.dom_probe import choose_visible_candidate
+import asyncio
+
+from astra_nexus.brain.nodriver import dom_probe
+from astra_nexus.brain.nodriver.dom_probe import (
+    choose_visible_candidate,
+    normalize_dom_probe_payload,
+)
 from astra_nexus.brain.nodriver.selectors import PROMPT_INPUT_SELECTORS
+from astra_nexus.config.settings import Settings
 
 
 def test_prompt_input_selectors_include_current_chatgpt_fallbacks() -> None:
@@ -59,3 +66,63 @@ def test_choose_visible_candidate_returns_none_without_visible_elements() -> Non
     ]
 
     assert choose_visible_candidate(candidates) is None
+
+
+def test_dom_probe_normalizes_string_candidate_without_crashing() -> None:
+    payload = normalize_dom_probe_payload(
+        {
+            "ready_state": {"type": "string", "value": "complete"},
+            "candidate_count": {"type": "number", "value": 1},
+            "candidates": ["unexpected"],
+        }
+    )
+
+    assert payload["ready_state"] == "complete"
+    assert payload["candidate_count"] == 1
+    assert payload["candidates"] == [{"raw": "unexpected"}]
+
+
+def test_dom_probe_normalizes_candidates_to_list_of_dicts() -> None:
+    payload = normalize_dom_probe_payload(
+        {
+            "candidates": {
+                "selector": {"type": "string", "value": "#prompt-textarea"},
+                "visible": {"type": "boolean", "value": True},
+            }
+        }
+    )
+
+    assert payload["candidates"] == [{"selector": "#prompt-textarea", "visible": True}]
+
+
+def test_dom_probe_run_stops_session_when_probe_raises(monkeypatch, tmp_path, capsys) -> None:
+    stopped = False
+
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def stop(self) -> None:
+            nonlocal stopped
+            stopped = True
+
+    async def failing_collect(_session) -> dict:
+        raise AttributeError("'str' object has no attribute 'get'")
+
+    monkeypatch.setattr(
+        dom_probe,
+        "load_settings",
+        lambda: Settings(
+            data_dir=tmp_path / "data",
+            nodriver_user_data_dir=tmp_path / "profile",
+        ),
+    )
+    monkeypatch.setattr(dom_probe, "BrowserSession", FakeSession)
+    monkeypatch.setattr(dom_probe, "collect_dom_probe", failing_collect)
+
+    exit_code = asyncio.run(dom_probe.run())
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert stopped is True
+    assert "status: dom_probe_failed" in output

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from astra_nexus.brain.nodriver.evaluate import unwrap_evaluate_result
 from astra_nexus.brain.nodriver.exceptions import (
     NoDriverBrowserConnectError,
     NoDriverChromeStartTimeoutError,
@@ -151,24 +152,28 @@ class BrowserSession:
         if self.tab is None:
             return None
         value = getattr(self.tab, "url", None)
+        value = unwrap_evaluate_result(value)
         if value:
             return str(value)
         try:
             value = await self.tab.evaluate("window.location.href")
         except Exception:
             return None
+        value = unwrap_evaluate_result(value)
         return str(value) if value else None
 
     async def current_title(self) -> str | None:
         if self.tab is None:
             return None
         value = getattr(self.tab, "title", None)
+        value = unwrap_evaluate_result(value)
         if value:
             return str(value)
         try:
             value = await self.tab.evaluate("document.title")
         except Exception:
             return None
+        value = unwrap_evaluate_result(value)
         return str(value) if value else None
 
     def _is_chatgpt_url(self, url: str | None) -> bool:

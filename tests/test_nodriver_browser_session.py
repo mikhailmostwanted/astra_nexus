@@ -7,7 +7,7 @@ from astra_nexus.brain.nodriver.browser_session import BrowserSession
 from astra_nexus.brain.nodriver.chatgpt_client import ChatGPTClient
 from astra_nexus.brain.nodriver.exceptions import (
     NoDriverBrowserConnectError,
-    NoDriverPromptBoxNotFoundError,
+    NoDriverChatGPTUINotReadyError,
 )
 from astra_nexus.config.settings import Settings
 
@@ -159,7 +159,8 @@ def test_login_unknown_without_composer_is_not_treated_as_login_ok(tmp_path: Pat
     )
     client = ChatGPTClient(settings=settings, session=session)
 
-    with pytest.raises(NoDriverPromptBoxNotFoundError) as exc:
+    with pytest.raises(NoDriverChatGPTUINotReadyError) as exc:
         asyncio.run(client.ask("Проверка"))
 
     assert exc.value.details["login_state"]["reason"] == "unknown"
+    assert exc.value.status == "chatgpt_ui_not_ready"

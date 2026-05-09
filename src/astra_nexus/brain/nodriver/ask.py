@@ -57,7 +57,7 @@ async def run(argv: list[str] | None = None, *, provider: Any | None = None) -> 
         if error is not None and settings.nodriver_keep_browser_open_on_error and session:
             await asyncio.to_thread(
                 input,
-                "Браузер оставлен открытым для диагностики. Нажми Enter для закрытия.",
+                "Браузер оставлен открытым. Проверь страницу и нажми Enter для закрытия.",
             )
         if session is not None:
             await session.stop()

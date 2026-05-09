@@ -2,20 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
-from astra_nexus.brain.nodriver.exceptions import NoDriverProviderError
+from astra_nexus.brain.nodriver.evaluate import unwrap_evaluate_result, unwrap_remote_value
+from astra_nexus.brain.nodriver.exceptions import NoDriverPageLoadError, NoDriverProviderError
 from astra_nexus.brain.nodriver.selectors import PROMPT_INPUT_SELECTORS
 from astra_nexus.config.settings import Settings, load_settings
 from astra_nexus.utils.logging import configure_logging
 
 PROMPT_CANDIDATE_MARKER = "data-astra-nexus-composer-candidate"
+POST_READY_PROBE_DELAY_SECONDS = 3.0
+
+logger = logging.getLogger(__name__)
 
 
 def choose_visible_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
     for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
         if (
             candidate.get("visible")
             and float(candidate.get("width") or 0) > 0
@@ -25,6 +32,36 @@ def choose_visible_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]
         ):
             return candidate
     return None
+
+
+def normalize_candidate(candidate: Any) -> dict[str, Any]:
+    candidate = unwrap_remote_value(candidate)
+    if isinstance(candidate, dict):
+        return {str(key): unwrap_remote_value(value) for key, value in candidate.items()}
+    return {"raw": "" if candidate is None else str(candidate)}
+
+
+def normalize_candidates(candidates: Any) -> list[dict[str, Any]]:
+    candidates = unwrap_remote_value(candidates)
+    if candidates is None:
+        return []
+    if not isinstance(candidates, list):
+        candidates = [candidates]
+    return [normalize_candidate(candidate) for candidate in candidates]
+
+
+def normalize_dom_probe_payload(summary: Any) -> dict[str, Any]:
+    payload = unwrap_evaluate_result(summary)
+    if not isinstance(payload, dict):
+        payload = {"raw": payload}
+    else:
+        payload = {str(key): unwrap_remote_value(value) for key, value in payload.items()}
+
+    payload["candidates"] = normalize_candidates(payload.get("candidates"))
+    payload["visible_candidates"] = normalize_candidates(payload.get("visible_candidates"))
+    if "candidate_count" not in payload:
+        payload["candidate_count"] = len(payload["candidates"])
+    return payload
 
 
 def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> str:
@@ -144,6 +181,9 @@ def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> s
 LOGIN_STATE_PROBE_SCRIPT = """
 /* LOGIN_STATE_PROBE */
 (() => {
+  const readyState = document.readyState;
+  const currentUrl = window.location.href;
+  const title = document.title || '';
   const loginWords = /\\b(log in|login|sign in|sign up)\\b/i;
   const visible = (node) => {
     if (!node) {
@@ -184,40 +224,60 @@ LOGIN_STATE_PROBE_SCRIPT = """
       ].join(', ')
     )
   ).find(visible);
-  if (loginNodes.length > 0) {
-    return {
-      login_required: true,
-      login_ok: false,
-      reason: 'login_controls_visible',
-      login_button_count: loginNodes.length,
-      composer_present: Boolean(composer),
-      account_present: Boolean(accountNode),
-    };
-  }
   if (composer) {
     return {
+      status: 'logged_in',
       login_required: false,
       login_ok: true,
       reason: 'composer_visible',
-      login_button_count: 0,
+      ready_state: readyState,
+      current_url: currentUrl,
+      page_title: title,
+      login_button_count: loginNodes.length,
       composer_present: true,
+      account_present: Boolean(accountNode),
+    };
+  }
+  if (loginNodes.length > 0) {
+    return {
+      status: 'login_required',
+      login_required: true,
+      login_ok: false,
+      reason: 'login_controls_visible',
+      ready_state: readyState,
+      current_url: currentUrl,
+      page_title: title,
+      login_button_count: loginNodes.length,
+      composer_present: false,
       account_present: Boolean(accountNode),
     };
   }
   if (accountNode) {
     return {
+      status: 'logged_in',
       login_required: false,
       login_ok: true,
       reason: 'account_or_nav_visible',
+      ready_state: readyState,
+      current_url: currentUrl,
+      page_title: title,
       login_button_count: 0,
       composer_present: false,
       account_present: true,
     };
   }
+  const host = window.location.hostname || '';
+  const looksLikeChatGPT = host === 'chatgpt.com' || host.endsWith('.chatgpt.com');
   return {
+    status: 'unknown',
     login_required: false,
     login_ok: false,
-    reason: 'unknown',
+    reason: looksLikeChatGPT && /chatgpt/i.test(title) && readyState !== 'complete'
+      ? 'page_loading'
+      : 'unknown_without_composer',
+    ready_state: readyState,
+    current_url: currentUrl,
+    page_title: title,
     login_button_count: 0,
     composer_present: false,
     account_present: false,
@@ -226,12 +286,65 @@ LOGIN_STATE_PROBE_SCRIPT = """
 """
 
 
+async def evaluate_script(tab: Any, script: str) -> Any:
+    return unwrap_evaluate_result(await tab.evaluate(script))
+
+
+async def read_ready_state(tab: Any) -> str:
+    try:
+        value = await evaluate_script(tab, "document.readyState")
+    except Exception:
+        return "unknown"
+    return str(value or "unknown")
+
+
+async def wait_for_page_ready_state_complete(tab: Any, timeout_seconds: float) -> str:
+    logger.info(
+        "page.ready_state.wait.started",
+        extra={"stage": "page.ready_state.wait.started"},
+    )
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
+    last_ready_state = "unknown"
+
+    while asyncio.get_running_loop().time() <= deadline:
+        last_ready_state = await read_ready_state(tab)
+        if last_ready_state == "complete":
+            logger.info(
+                "page.ready_state.complete",
+                extra={
+                    "stage": "page.ready_state.complete",
+                    "ready_state": last_ready_state,
+                },
+            )
+            return last_ready_state
+        await asyncio.sleep(0.5)
+
+    raise NoDriverPageLoadError(
+        "ChatGPT Web не дошёл до document.readyState === 'complete' за отведённое время.",
+        stage="page.ready_state.wait.started",
+        details={"ready_state": last_ready_state},
+    )
+
+
 async def collect_dom_probe(session: BrowserSession) -> dict[str, Any]:
     tab = await session.ensure_chatgpt_page()
-    summary = await tab.evaluate(build_prompt_candidate_probe_script())
-    payload = dict(summary or {})
+    await wait_for_page_ready_state_complete(
+        tab,
+        session.settings.nodriver_page_load_timeout_seconds,
+    )
+    await asyncio.sleep(POST_READY_PROBE_DELAY_SECONDS)
+    logger.info("dom.probe.started", extra={"stage": "dom.probe.started"})
+    summary = await evaluate_script(tab, build_prompt_candidate_probe_script())
+    payload = normalize_dom_probe_payload(summary)
     payload["current_url"] = await session.current_url()
     payload["page_title"] = await session.current_title()
+    logger.info(
+        "dom.probe.finished",
+        extra={
+            "stage": "dom.probe.finished",
+            "candidate_count": payload.get("candidate_count"),
+        },
+    )
     return payload
 
 
@@ -249,17 +362,39 @@ async def run() -> int:
     settings = load_settings()
     configure_logging(settings.log_level)
     session = BrowserSession(settings, lifecycle_context="dom_probe")
+    payload: dict[str, Any] | None = None
+    report_path: Path | None = None
+    error: Exception | None = None
     try:
         payload = await collect_dom_probe(session)
         report_path = write_dom_probe_report(settings, payload)
     except NoDriverProviderError as exc:
+        error = exc
         print(f"status: {exc.error_code}")
         print(f"stage: {exc.stage or 'unknown'}")
         print(f"message: {exc}")
         print(f"action: {exc.action}")
-        return 1
+    except Exception as exc:
+        error = exc
+        print("status: dom_probe_failed")
+        print("stage: dom.probe.started")
+        print(f"message: {exc}")
+        print("action: проверь страницу ChatGPT и повтори astra-nexus-nodriver-dom-probe")
     finally:
+        if error is not None and settings.nodriver_keep_browser_open_on_error:
+            await asyncio.to_thread(
+                input,
+                "Браузер оставлен открытым. Проверь страницу и нажми Enter для закрытия.",
+            )
         await session.stop()
+
+    if error is not None:
+        return 1
+    if payload is None or report_path is None:
+        print("status: dom_probe_failed")
+        print("stage: dom.probe.finished")
+        print("message: DOM probe не вернул результат.")
+        return 1
 
     print("Astra Nexus NoDriver DOM probe")
     print(f"current_url: {payload.get('current_url')}")
@@ -269,7 +404,7 @@ async def run() -> int:
     print(f"contenteditable_count: {payload.get('contenteditable_count')}")
     print(f"textbox_count: {payload.get('textbox_count')}")
     print(f"candidate_count: {payload.get('candidate_count')}")
-    for candidate in payload.get("candidates", []):
+    for candidate in normalize_candidates(payload.get("candidates", [])):
         print(
             "candidate: "
             f"selector={candidate.get('selector')} "
@@ -277,7 +412,8 @@ async def run() -> int:
             f"id={candidate.get('id')} "
             f"role={candidate.get('role')} "
             f"data-testid={candidate.get('data_testid')} "
-            f"class={candidate.get('class_name')}"
+            f"class={candidate.get('class_name')} "
+            f"raw={candidate.get('raw')}"
         )
     print(f"report: {report_path}")
     return 0
