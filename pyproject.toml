@@ -23,6 +23,7 @@ astra-nexus-nodriver-dom-probe = "astra_nexus.brain.nodriver.dom_probe:main"
 astra-nexus-nodriver-insert-probe = "astra_nexus.brain.nodriver.insert_probe:main"
 astra-nexus-nodriver-login = "astra_nexus.brain.nodriver.login:main"
 astra-nexus-nodriver-smoke = "astra_nexus.brain.nodriver.smoke:main"
+astra-nexus-team-ask = "astra_nexus.team.ask:main"
 astra-nexus-team-smoke = "astra_nexus.team.smoke:main"
 
 [project.optional-dependencies]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 
+import astra_nexus.team as team_package
 from astra_nexus.team import smoke as smoke_module
 
 
@@ -47,7 +48,10 @@ def test_team_smoke_cli_uses_default_task_when_argument_missing(tmp_path, capsys
 
 def test_team_workspace_and_smoke_cli_do_not_import_nodriver() -> None:
     source = inspect.getsource(smoke_module)
+    package_source = inspect.getsource(team_package)
 
     assert "NoDriver" not in source
     assert "nodriver" not in source
+    assert "NoDriver" not in package_source
+    assert "nodriver" not in package_source
     assert "FakeTeamProvider" in source

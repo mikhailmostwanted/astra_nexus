@@ -107,6 +107,29 @@ Prompt Engine находится в `astra_nexus.team.prompting`.
 `FakeTeamProvider` используется в unit-тестах. Он возвращает детерминированные ответы и
 умеет симулировать ошибку выбранного агента через `fail_on`.
 
+Fake provider не импортирует NoDriver и не требует браузерной сессии. Он нужен для
+быстрой проверки orchestration, prompts, событий и workspace.
+
+## NoDriver team provider
+
+`NoDriverTeamProvider` находится в `astra_nexus.team.nodriver_provider`.
+
+Он реализует тот же `TeamProvider.generate(...)`, но внутри использует существующий
+`NoDriverProvider` из `astra_nexus.brain.nodriver_provider`. Browser lifecycle,
+ChatGPT client, retry/debug поведение и локальный browser profile остаются в NoDriver
+слое; team adapter не дублирует browser-логику.
+
+Так как текущий `NoDriverProvider.ask(...)` принимает один текстовый prompt, adapter
+склеивает `AgentPrompt.system_prompt` и `AgentPrompt.user_prompt` в полный prompt:
+
+1. системная инструкция агента;
+2. задача пользователя;
+3. предыдущие результаты команды;
+4. инструкция текущего агента.
+
+Этот prompt отправляется в существующий `NoDriverProvider.ask(...)` с `agent_id` текущей
+роли и контекстом run/workspace для debug-reporting.
+
 ## CLI smoke
 
 Локальный smoke-запуск AI-команды выполняется командой:
@@ -128,6 +151,40 @@ workspace run и печатает:
 - `run_id`
 - `final_result`
 - `workspace_path`
+
+## CLI real team ask
+
+Реальный запуск команды через ChatGPT Web/NoDriver выполняется командой:
+
+```bash
+astra-nexus-team-ask "Ответь кратко: что такое Astra Nexus?"
+```
+
+Если текст задачи не передан, используется дефолт:
+
+```text
+Ответь кратко: что такое Astra Nexus?
+```
+
+Команда запускает тот же последовательный `AsyncTeamOrchestrator`, но с
+`NoDriverTeamProvider`, сохраняет workspace run и печатает:
+
+- `status`
+- `run_id`
+- `workspace_path`
+- `final_result`
+
+Перед реальным запуском нужно подготовить локальную ChatGPT Web сессию обычными
+NoDriver-командами:
+
+```bash
+astra-nexus-nodriver-login
+astra-nexus-nodriver-smoke
+```
+
+`astra-nexus-team-ask` пока использует один общий ChatGPT Web provider последовательно.
+Параллельные агенты, отдельные ChatGPT-чаты и отдельные agent sessions будут добавлены
+позже.
 
 ## Team run workspace
 
