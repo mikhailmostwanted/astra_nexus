@@ -98,9 +98,62 @@ Prompt Engine находится в `astra_nexus.team.prompting`.
 - `agent_started`
 - `agent_finished`
 - `agent_failed`
+- `agent_retry_scheduled`
+- `agent_retry_started`
 
 Формат события уже содержит понятный `message` и `payload`, чтобы позже отдать эти данные
 в Telegram log-chat без изменения domain-модели.
+
+## Retry policy
+
+AI Team pipeline выполняет агентов последовательно, но каждый агентский шаг может быть
+повторён на уровне team orchestration при временной ошибке provider-а.
+
+Настройки:
+
+- `TEAM_AGENT_MAX_RETRIES` / `ASTRA_TEAM_AGENT_MAX_RETRIES` - число повторных попыток
+  после первой неудачной попытки.
+- `TEAM_AGENT_RETRY_DELAY_SECONDS` / `ASTRA_TEAM_AGENT_RETRY_DELAY_SECONDS` - пауза
+  перед retry.
+- `TEAM_AGENT_RESPONSE_TIMEOUT_SECONDS` / `ASTRA_TEAM_AGENT_RESPONSE_TIMEOUT_SECONDS` -
+  внешний timeout на один агентский вызов.
+
+Transient provider errors:
+
+- `response_timeout`
+- `browser_connect_failed`
+- `prompt_insert_failed`
+- `chatgpt_ui_not_ready`
+- generic provider exceptions без явной permanent-классификации
+
+Permanent provider errors не ретраятся:
+
+- `login_required`
+- `profile_locked`
+- `prompt_box_not_found`
+- `selector_not_found`
+
+Retry-события пишутся в `events.jsonl` и `events.json`, поэтому будущий Telegram log-chat
+сможет показать, какой агент был повторён и почему.
+
+## Context limit
+
+Чтобы поздние агенты не получали бесконечно растущий prompt, `TeamPromptBuilder`
+ограничивает только prompt-контекст предыдущих результатов.
+
+Настройка:
+
+- `TEAM_PREVIOUS_RESULTS_MAX_CHARS` / `ASTRA_TEAM_PREVIOUS_RESULTS_MAX_CHARS`
+
+Default: `16000`.
+
+Если контекст сокращается, prompt получает пометку:
+
+```text
+Контекст предыдущих результатов сокращён...
+```
+
+Полные agent results не теряются и сохраняются в workspace.
 
 ## Fake provider
 
@@ -186,6 +239,28 @@ astra-nexus-nodriver-smoke
 Параллельные агенты, отдельные ChatGPT-чаты и отдельные agent sessions будут добавлены
 позже.
 
+Если run завершился с ошибкой, команда печатает подсказку:
+
+```text
+Можно продолжить: astra-nexus-team-resume <run_id>
+```
+
+## CLI resume
+
+Failed run можно продолжить из сохранённого workspace:
+
+```bash
+astra-nexus-team-resume <run_id>
+```
+
+Команда:
+
+- читает `data/team_runs/<run_id>/`;
+- восстанавливает completed agent results;
+- пропускает уже completed агентов;
+- продолжает pipeline с первого failed/not-started шага;
+- обновляет workspace и печатает `status`, `run_id`, `workspace_path`, `final_result`.
+
 ## Team run workspace
 
 Каждый smoke-run сохраняется в:
@@ -201,6 +276,9 @@ data/team_runs/<run_id>/
   run.json
   events.jsonl
   final.md
+  tasks.json
+  results.json
+  events.json
   agent_results/
     coordinator.md
     analyst.md
@@ -217,6 +295,9 @@ data/team_runs/<run_id>/
 роль агента для agent-событий, message и details. Этот формат готовит слой к будущему
 Telegram log/chat отображению без подключения Telegram на текущем этапе.
 
+`tasks.json`, `results.json` и `events.json` нужны для машинного восстановления failed
+run через `astra-nexus-team-resume`. Markdown-файлы остаются человекочитаемым отчётом.
+
 `agent_results/*.md` содержит человекочитаемый результат каждого агента: имя, роль,
 исходную задачу, статус и текст результата.
 
@@ -231,6 +312,5 @@ Telegram log/chat отображению без подключения Telegram 
 - Telegram-группа и Telegram task flow.
 - Параллельные агенты.
 - Отдельные ChatGPT-чаты на агента.
-- NoDriver adapter для AI-команды.
 - Self-improving/Codex-режим.
 - Storage/migrations для team-сущностей.

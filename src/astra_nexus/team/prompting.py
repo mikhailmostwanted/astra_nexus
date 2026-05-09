@@ -7,6 +7,8 @@ from typing import Any
 
 from astra_nexus.team.models import AgentProfile, AgentResult, AgentRole, RunEvent
 
+DEFAULT_PREVIOUS_RESULTS_MAX_CHARS = 16000
+
 
 @dataclass(frozen=True)
 class AgentContext:
@@ -35,9 +37,12 @@ class AgentPrompt:
 
 
 class TeamPromptBuilder:
+    def __init__(self, *, previous_results_max_chars: int = DEFAULT_PREVIOUS_RESULTS_MAX_CHARS):
+        self.previous_results_max_chars = previous_results_max_chars
+
     def build(self, *, profile: AgentProfile, context: AgentContext) -> AgentPrompt:
         system_prompt = self._build_system_prompt(profile)
-        user_prompt = self._build_user_prompt(context)
+        user_prompt, previous_results_truncated = self._build_user_prompt(context)
         return AgentPrompt(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
@@ -46,6 +51,8 @@ class TeamPromptBuilder:
                 "agent_role": profile.role.value,
                 "agent_name": profile.display_name,
                 "previous_results_count": len(context.previous_results),
+                "previous_results_truncated": previous_results_truncated,
+                "previous_results_max_chars": self.previous_results_max_chars,
                 "previous_events_count": len(context.previous_events),
                 "workspace_path": str(context.workspace_path) if context.workspace_path else None,
             },
@@ -79,7 +86,10 @@ class TeamPromptBuilder:
             ]
         )
 
-    def _build_user_prompt(self, context: AgentContext) -> str:
+    def _build_user_prompt(self, context: AgentContext) -> tuple[str, bool]:
+        previous_results_section, previous_results_truncated = self._previous_results_section(
+            context.previous_results
+        )
         sections = [
             f"Run ID: {context.run_id}",
             f"Текущий агент: {context.current_agent_name} ({context.current_agent_role.value})",
@@ -87,7 +97,7 @@ class TeamPromptBuilder:
             "Задача пользователя:",
             context.user_task,
             "",
-            self._previous_results_section(context.previous_results),
+            previous_results_section,
         ]
 
         if context.previous_events:
@@ -97,11 +107,13 @@ class TeamPromptBuilder:
         if context.extra_instructions:
             sections.extend(["", "Дополнительные инструкции:", *context.extra_instructions])
 
-        return "\n".join(sections)
+        return "\n".join(sections), previous_results_truncated
 
-    def _previous_results_section(self, previous_results: Sequence[AgentResult]) -> str:
+    def _previous_results_section(
+        self, previous_results: Sequence[AgentResult]
+    ) -> tuple[str, bool]:
         if not previous_results:
-            return "Предыдущие результаты команды:\nПока предыдущих результатов нет."
+            return "Предыдущие результаты команды:\nПока предыдущих результатов нет.", False
 
         lines = ["Предыдущие результаты команды:"]
         for index, result in enumerate(previous_results, start=1):
@@ -112,7 +124,15 @@ class TeamPromptBuilder:
                     result.content,
                 ]
             )
-        return "\n".join(lines)
+        text = "\n".join(lines)
+        max_chars = self.previous_results_max_chars
+        if max_chars > 0 and len(text) > max_chars:
+            marker = (
+                f"\n\n[Контекст предыдущих результатов сокращён до {max_chars} символов. "
+                "Полные результаты сохранены в workspace.]"
+            )
+            return text[:max_chars].rstrip() + marker, True
+        return text, False
 
     def _previous_events_section(self, previous_events: Sequence[RunEvent]) -> str:
         lines = ["Предыдущие события run:"]
@@ -129,6 +149,7 @@ ROLE_INSTRUCTIONS = {
             "- раскладывает работу на этапы.",
             "- не пишет финальный ответ.",
             "- выдаёт план для команды.",
+            "- держит ответ коротким: только краткий план.",
         ]
     ),
     AgentRole.ANALYST: "\n".join(
@@ -136,6 +157,7 @@ ROLE_INSTRUCTIONS = {
             "- разбирает факты, структуру, вводные данные и ограничения.",
             "- отделяет известное от предположений.",
             "- готовит материал, на который смогут опереться следующие агенты.",
+            "- пишет структурированный анализ без воды.",
         ]
     ),
     AgentRole.CRITIC: "\n".join(
@@ -145,6 +167,7 @@ ROLE_INSTRUCTIONS = {
             "- формулирует вопросы к тексту, файлу или решению.",
             "- не переписывает всё сам.",
             "- отдаёт список замечаний и требований к улучшению.",
+            "- пишет список рисков и вопросов, а не длинный трактат.",
         ]
     ),
     AgentRole.EDITOR: "\n".join(
@@ -153,6 +176,7 @@ ROLE_INSTRUCTIONS = {
             "- улучшает текст или решение.",
             "- делает ответ яснее, сильнее и человечнее.",
             "- сохраняет смысл задачи.",
+            "- отдаёт улучшенную версию без лишней теории.",
         ]
     ),
     AgentRole.QA_CONTROLLER: "\n".join(
@@ -160,6 +184,7 @@ ROLE_INSTRUCTIONS = {
             "- проверяет готовый вариант.",
             "- ищет ошибки, противоречия, пустые утверждения и недосказанность.",
             "- пишет, что надо поправить перед финалом.",
+            "- отдаёт проверку качества коротким списком.",
         ]
     ),
     AgentRole.FINAL_COMPOSER: "\n".join(
@@ -168,6 +193,7 @@ ROLE_INSTRUCTIONS = {
             "- учитывает весь предыдущий контекст.",
             "- пишет уже пользователю.",
             "- не упоминает внутреннюю кухню, если пользователь этого не просил.",
+            "- отдаёт финальный ответ без промежуточных рассуждений.",
         ]
     ),
 }

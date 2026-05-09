@@ -33,6 +33,8 @@ class RunEventType(StrEnum):
     RUN_FAILED = "run_failed"
     AGENT_STARTED = "agent_started"
     AGENT_FINISHED = "agent_finished"
+    AGENT_RETRY_SCHEDULED = "agent_retry_scheduled"
+    AGENT_RETRY_STARTED = "agent_retry_started"
     AGENT_FAILED = "agent_failed"
 
 

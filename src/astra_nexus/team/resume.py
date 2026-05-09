@@ -12,8 +12,6 @@ from astra_nexus.team.provider import TeamProvider, TeamProviderError
 from astra_nexus.team.workspace import TeamRunWorkspace
 from astra_nexus.utils.logging import configure_logging
 
-DEFAULT_TASK = "Ответь кратко: что такое Astra Nexus?"
-
 
 async def run(
     argv: list[str] | None = None,
@@ -21,11 +19,12 @@ async def run(
     provider: TeamProvider | None = None,
 ) -> int:
     args = _parse_args(argv)
-    user_task = " ".join(args.task).strip() or DEFAULT_TASK
-
     settings = load_settings()
     configure_logging(settings.log_level)
     workspace_root = args.workspace_root or settings.team_runs_dir
+    workspace = TeamRunWorkspace(root_path=workspace_root)
+    team_run = workspace.load(args.run_id)
+
     provider = provider or NoDriverTeamProvider(settings=settings)
     orchestrator = AsyncTeamOrchestrator(
         provider=provider,
@@ -33,7 +32,7 @@ async def run(
             previous_results_max_chars=args.previous_results_max_chars
             or settings.team_previous_results_max_chars
         ),
-        workspace_path=workspace_root,
+        workspace_path=workspace_root / team_run.id,
         retry_policy=TeamRetryPolicy(
             max_retries=(
                 args.max_retries
@@ -54,18 +53,22 @@ async def run(
     )
 
     try:
-        outcome = await orchestrator.run(user_task)
+        outcome = await orchestrator.resume(team_run)
     except TeamProviderError as exc:
-        run_path = _save_last_run(orchestrator, workspace_root)
-        _print_failed_run(exc=exc, orchestrator=orchestrator, run_path=run_path)
+        run_path = workspace.save(orchestrator.runs[-1])
+        print("status: failed")
+        print(f"run_id: {team_run.id}")
+        print(f"workspace_path: {run_path}")
+        print(f"message: {exc}")
+        print(f"Можно продолжить: astra-nexus-team-resume {team_run.id}")
         return 1
     finally:
         await _close_provider(provider)
 
-    workspace_path = TeamRunWorkspace(root_path=workspace_root).save(outcome.run)
+    run_path = workspace.save(outcome.run)
     print(f"status: {outcome.run.status.value}")
     print(f"run_id: {outcome.run.id}")
-    print(f"workspace_path: {workspace_path}")
+    print(f"workspace_path: {run_path}")
     print("final_result:")
     print(outcome.final_text)
     return 0
@@ -80,46 +83,19 @@ def main(
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run AI Team pipeline with NoDriver provider.")
-    parser.add_argument(
-        "task",
-        nargs="*",
-        help="Текст задачи. Если не указан, используется дефолтная задача.",
-    )
+    parser = argparse.ArgumentParser(description="Resume failed AI Team run.")
+    parser.add_argument("run_id", help="ID из data/team_runs/<run_id>.")
     parser.add_argument(
         "--workspace-root",
         type=Path,
         default=None,
-        help="Папка для team run workspaces.",
+        help="Папка с team run workspaces.",
     )
     parser.add_argument("--max-retries", type=int, default=None)
     parser.add_argument("--retry-delay-seconds", type=float, default=None)
     parser.add_argument("--response-timeout-seconds", type=float, default=None)
     parser.add_argument("--previous-results-max-chars", type=int, default=None)
     return parser.parse_args(argv)
-
-
-def _save_last_run(orchestrator: AsyncTeamOrchestrator, workspace_root: Path) -> Path | None:
-    if not orchestrator.runs:
-        return None
-    return TeamRunWorkspace(root_path=workspace_root).save(orchestrator.runs[-1])
-
-
-def _print_failed_run(
-    *,
-    exc: TeamProviderError,
-    orchestrator: AsyncTeamOrchestrator,
-    run_path: Path | None,
-) -> None:
-    run = orchestrator.runs[-1] if orchestrator.runs else None
-    print("status: failed")
-    if run is not None:
-        print(f"run_id: {run.id}")
-    if run_path is not None:
-        print(f"workspace_path: {run_path}")
-    print(f"message: {exc}")
-    if run is not None:
-        print(f"Можно продолжить: astra-nexus-team-resume {run.id}")
 
 
 async def _close_provider(provider: TeamProvider) -> None:

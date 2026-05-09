@@ -1,10 +1,21 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from astra_nexus.team.models import AgentResult, AgentRole, AgentTask, RunEvent, TeamRun
+from astra_nexus.team.models import (
+    AgentResult,
+    AgentRole,
+    AgentTask,
+    AgentTaskStatus,
+    RunEvent,
+    RunEventType,
+    RunStatus,
+    TeamRun,
+)
+from astra_nexus.team.profiles import default_profiles_by_role
 
 
 class TeamRunWorkspace:
@@ -17,6 +28,9 @@ class TeamRunWorkspace:
         agent_results_path.mkdir(parents=True, exist_ok=True)
 
         self._write_json(run_path / "run.json", self._run_payload(run))
+        self._write_json(run_path / "tasks.json", self._tasks_payload(run.tasks))
+        self._write_json(run_path / "results.json", self._results_payload(run.results))
+        self._write_json(run_path / "events.json", self._events_payload(run.events))
         self._write_events(run_path / "events.jsonl", run.events)
         (run_path / "final.md").write_text(run.final_text or "", encoding="utf-8")
 
@@ -31,6 +45,65 @@ class TeamRunWorkspace:
             )
 
         return run_path
+
+    def load(self, run_id: str) -> TeamRun:
+        run_path = self.root_path / run_id
+        run_payload = self._read_json(run_path / "run.json")
+        tasks_payload = self._read_json(run_path / "tasks.json")
+        results_payload = self._read_json(run_path / "results.json")
+        events_payload = self._read_json(run_path / "events.json")
+        profiles = default_profiles_by_role()
+
+        run = TeamRun(
+            id=run_payload["run_id"],
+            user_task=run_payload["user_task"],
+            status=RunStatus(run_payload["status"]),
+            final_text=run_payload.get("final_result"),
+            error_message=run_payload.get("error_message"),
+            created_at=self._parse_datetime(run_payload.get("created_at")),
+            started_at=self._parse_optional_datetime(run_payload.get("started_at")),
+            completed_at=self._parse_optional_datetime(run_payload.get("finished_at")),
+        )
+        run.tasks = [
+            AgentTask(
+                id=task["task_id"],
+                run_id=run.id,
+                profile=profiles[AgentRole(task["role"])],
+                user_task=run.user_task,
+                status=AgentTaskStatus(task["status"]),
+                created_at=self._parse_datetime(task["created_at"]),
+                started_at=self._parse_optional_datetime(task.get("started_at")),
+                completed_at=self._parse_optional_datetime(task.get("finished_at")),
+                error_message=task.get("error_message"),
+            )
+            for task in tasks_payload
+        ]
+        run.results = [
+            AgentResult(
+                id=result["result_id"],
+                run_id=run.id,
+                task_id=result["task_id"],
+                profile=profiles[AgentRole(result["role"])],
+                content=result["content"],
+                created_at=self._parse_datetime(result["created_at"]),
+                metadata=result.get("metadata", {}),
+            )
+            for result in results_payload
+        ]
+        run.events = [
+            RunEvent(
+                id=event["event_id"],
+                run_id=run.id,
+                type=RunEventType(event["event_type"]),
+                message=event["message"],
+                agent_role=AgentRole(event["agent_role"]) if event.get("agent_role") else None,
+                agent_task_id=event.get("agent_task_id"),
+                payload=event.get("details", {}),
+                created_at=self._parse_datetime(event["timestamp"]),
+            )
+            for event in events_payload
+        ]
+        return run
 
     def _run_payload(self, run: TeamRun) -> dict[str, Any]:
         return {
@@ -66,16 +139,52 @@ class TeamRunWorkspace:
             )
         return summaries
 
+    def _tasks_payload(self, tasks: list[AgentTask]) -> list[dict[str, Any]]:
+        return [
+            {
+                "task_id": task.id,
+                "run_id": task.run_id,
+                "role": task.profile.role.value,
+                "display_name": task.profile.display_name,
+                "status": task.status.value,
+                "created_at": self._serialize_datetime(task.created_at),
+                "started_at": self._serialize_datetime(task.started_at),
+                "finished_at": self._serialize_datetime(task.completed_at),
+                "error_message": task.error_message,
+            }
+            for task in tasks
+        ]
+
+    def _results_payload(self, results: list[AgentResult]) -> list[dict[str, Any]]:
+        return [
+            {
+                "result_id": result.id,
+                "run_id": result.run_id,
+                "task_id": result.task_id,
+                "role": result.profile.role.value,
+                "display_name": result.profile.display_name,
+                "content": result.content,
+                "created_at": self._serialize_datetime(result.created_at),
+                "metadata": result.metadata,
+            }
+            for result in results
+        ]
+
+    def _events_payload(self, events: list[RunEvent]) -> list[dict[str, Any]]:
+        return [self._event_payload(event) for event in events]
+
     def _write_events(self, path: Path, events: list[RunEvent]) -> None:
         lines = [json.dumps(self._event_payload(event), ensure_ascii=False) for event in events]
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
     def _event_payload(self, event: RunEvent) -> dict[str, Any]:
         return {
+            "event_id": event.id,
             "timestamp": self._serialize_datetime(event.created_at),
             "event_type": event.type.value,
             "run_id": event.run_id,
             "agent_role": event.agent_role.value if event.agent_role is not None else None,
+            "agent_task_id": event.agent_task_id,
             "message": event.message,
             "details": event.payload,
         }
@@ -151,5 +260,16 @@ class TeamRunWorkspace:
             encoding="utf-8",
         )
 
+    def _read_json(self, path: Path) -> Any:
+        return json.loads(path.read_text(encoding="utf-8"))
+
     def _serialize_datetime(self, value: Any) -> str | None:
         return value.isoformat() if value is not None else None
+
+    def _parse_datetime(self, value: str | None) -> datetime:
+        if value is None:
+            raise ValueError("datetime value is required")
+        return datetime.fromisoformat(value)
+
+    def _parse_optional_datetime(self, value: str | None) -> datetime | None:
+        return datetime.fromisoformat(value) if value else None

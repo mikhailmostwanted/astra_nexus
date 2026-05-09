@@ -5,11 +5,27 @@ from collections.abc import Sequence
 from typing import Any
 
 from astra_nexus.brain.base import BrainProvider, BrainResponse
+from astra_nexus.brain.nodriver.exceptions import NoDriverProviderError
 from astra_nexus.brain.nodriver_provider import NoDriverProvider
 from astra_nexus.config.settings import Settings
 from astra_nexus.team.models import AgentProfile, AgentResult
 from astra_nexus.team.prompting import AgentPrompt
-from astra_nexus.team.provider import TeamProvider
+from astra_nexus.team.provider import TeamErrorKind, TeamProvider, TeamProviderError
+
+TRANSIENT_NODRIVER_ERROR_CODES = {
+    "response_timeout",
+    "browser_connect_failed",
+    "prompt_insert_failed",
+    "chatgpt_ui_not_ready",
+    "unavailable",
+}
+
+PERMANENT_NODRIVER_ERROR_CODES = {
+    "login_required",
+    "profile_locked",
+    "prompt_box_not_found",
+    "selector_not_found",
+}
 
 
 class NoDriverTeamProvider(TeamProvider):
@@ -37,18 +53,27 @@ class NoDriverTeamProvider(TeamProvider):
             previous_results=previous_results,
             prompt=prompt,
         )
-        response = self.brain_provider.ask(
-            agent_id=profile.profile_id,
-            prompt=full_prompt,
-            context=self._context(
-                profile=profile,
-                user_task=user_task,
-                previous_results=previous_results,
-                prompt=prompt,
-            ),
-        )
-        resolved = await response if inspect.isawaitable(response) else response
-        return self._content(resolved)
+        try:
+            response = self.brain_provider.ask(
+                agent_id=profile.profile_id,
+                prompt=full_prompt,
+                context=self._context(
+                    profile=profile,
+                    user_task=user_task,
+                    previous_results=previous_results,
+                    prompt=prompt,
+                ),
+            )
+            resolved = await response if inspect.isawaitable(response) else response
+            return self._content(resolved)
+        except NoDriverProviderError as exc:
+            raise TeamProviderError(
+                str(exc),
+                agent_id=profile.profile_id,
+                error_code=exc.error_code,
+                error_kind=self._error_kind(exc.error_code),
+                original_error=exc,
+            ) from exc
 
     def build_full_prompt(
         self,
@@ -122,3 +147,10 @@ class NoDriverTeamProvider(TeamProvider):
         for result in previous_results:
             lines.append(f"{result.profile.role.value}: {result.content}")
         return "\n\n".join(lines)
+
+    def _error_kind(self, error_code: str) -> TeamErrorKind:
+        if error_code in PERMANENT_NODRIVER_ERROR_CODES:
+            return TeamErrorKind.PERMANENT_PROVIDER
+        if error_code in TRANSIENT_NODRIVER_ERROR_CODES:
+            return TeamErrorKind.TRANSIENT_PROVIDER
+        return TeamErrorKind.TRANSIENT_PROVIDER

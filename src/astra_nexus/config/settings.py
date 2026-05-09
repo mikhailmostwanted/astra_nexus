@@ -29,6 +29,46 @@ class Settings(BaseSettings):
             "WORKSPACE_BASE_PATH",
         ),
     )
+    team_runs_dir: Path = Field(
+        default=Path("data/team_runs"),
+        validation_alias=AliasChoices(
+            "team_runs_dir",
+            "TEAM_RUNS_DIR",
+            "ASTRA_TEAM_RUNS_DIR",
+        ),
+    )
+    team_agent_max_retries: int = Field(
+        default=1,
+        validation_alias=AliasChoices(
+            "team_agent_max_retries",
+            "TEAM_AGENT_MAX_RETRIES",
+            "ASTRA_TEAM_AGENT_MAX_RETRIES",
+        ),
+    )
+    team_agent_retry_delay_seconds: float = Field(
+        default=2.0,
+        validation_alias=AliasChoices(
+            "team_agent_retry_delay_seconds",
+            "TEAM_AGENT_RETRY_DELAY_SECONDS",
+            "ASTRA_TEAM_AGENT_RETRY_DELAY_SECONDS",
+        ),
+    )
+    team_agent_response_timeout_seconds: float = Field(
+        default=240.0,
+        validation_alias=AliasChoices(
+            "team_agent_response_timeout_seconds",
+            "TEAM_AGENT_RESPONSE_TIMEOUT_SECONDS",
+            "ASTRA_TEAM_AGENT_RESPONSE_TIMEOUT_SECONDS",
+        ),
+    )
+    team_previous_results_max_chars: int = Field(
+        default=16000,
+        validation_alias=AliasChoices(
+            "team_previous_results_max_chars",
+            "TEAM_PREVIOUS_RESULTS_MAX_CHARS",
+            "ASTRA_TEAM_PREVIOUS_RESULTS_MAX_CHARS",
+        ),
+    )
     brain_provider: str = Field(
         default="dummy",
         validation_alias=AliasChoices("brain_provider", "ASTRA_BRAIN_PROVIDER", "BRAIN_PROVIDER"),

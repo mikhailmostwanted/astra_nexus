@@ -11,7 +11,7 @@ from astra_nexus.team.models import (
     TeamRun,
     TeamRunOutcome,
 )
-from astra_nexus.team.orchestrator import AsyncTeamOrchestrator
+from astra_nexus.team.orchestrator import AsyncTeamOrchestrator, TeamRetryPolicy
 from astra_nexus.team.profiles import (
     DEFAULT_AGENT_PIPELINE,
     DEFAULT_AGENT_PROFILES,
@@ -40,6 +40,7 @@ __all__ = [
     "TeamProvider",
     "TeamProviderError",
     "TeamPromptBuilder",
+    "TeamRetryPolicy",
     "TeamRun",
     "TeamRunOutcome",
     "TeamRunWorkspace",
