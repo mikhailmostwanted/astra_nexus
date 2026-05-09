@@ -15,6 +15,7 @@ NODRIVER_HEADLESS=false
 NODRIVER_CHATGPT_URL=https://chatgpt.com/
 NODRIVER_RESPONSE_TIMEOUT_SECONDS=180
 NODRIVER_PAGE_LOAD_TIMEOUT_SECONDS=60
+NODRIVER_KEEP_BROWSER_OPEN_ON_ERROR=false
 NODRIVER_START_TIMEOUT_SECONDS=90
 NODRIVER_NO_SANDBOX=false
 NODRIVER_BROWSER_EXECUTABLE_PATH=
@@ -83,6 +84,7 @@ Astra Nexus использует один browser profile:
 - `astra-nexus-nodriver-login`;
 - `astra-nexus-nodriver-smoke`;
 - `astra-nexus-nodriver-ask`;
+- `astra-nexus-nodriver-dom-probe`;
 - API deep health;
 - Telegram/API flow с `BRAIN_PROVIDER=nodriver`.
 
@@ -155,6 +157,38 @@ action: ...
 ```
 
 Это основной способ отделить проблему ChatGPT Web bridge от Telegram task flow.
+
+## Если smoke падает с prompt_box_not_found
+
+`prompt_box_not_found` означает, что профиль дошёл до ChatGPT, но Astra Nexus не
+нашёл видимое поле ввода. Сначала собери безопасную DOM-диагностику:
+
+```bash
+astra-nexus-nodriver-dom-probe
+```
+
+Команда не отправляет prompt и не сохраняет HTML, cookies или сообщения. Она выводит
+`current_url`, `page_title`, `ready_state`, количество `textarea`,
+`contenteditable`, `role=textbox` и список видимых candidate-элементов. JSON пишется в:
+
+```text
+data/debug/nodriver/dom_probe.json
+```
+
+Чтобы оставить Chrome открытым при ошибке smoke/ask:
+
+```env
+NODRIVER_KEEP_BROWSER_OPEN_ON_ERROR=true
+```
+
+В этом режиме `astra-nexus-nodriver-smoke` и `astra-nexus-nodriver-ask` при ошибке
+печатают сообщение:
+
+```text
+Браузер оставлен открытым для диагностики. Нажми Enter для закрытия.
+```
+
+После Enter браузер закрывается и lifecycle lock освобождается.
 
 ## Как дебажить Telegram /task + NoDriver
 

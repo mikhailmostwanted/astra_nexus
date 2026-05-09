@@ -13,6 +13,7 @@ NODRIVER_USER_DATA_DIR=./data/browser_profiles/default
 NODRIVER_HEADLESS=false
 NODRIVER_CHATGPT_URL=https://chatgpt.com/
 NODRIVER_START_TIMEOUT_SECONDS=90
+NODRIVER_KEEP_BROWSER_OPEN_ON_ERROR=false
 ```
 
 2. Закрой лишние Chrome/Chromium окна, открытые предыдущими NoDriver-командами.
@@ -73,6 +74,33 @@ response: ...
 При ошибке команда печатает `status`, `stage`, `message`, `url`, `selector` и `action`.
 Это помогает понять, проблема в NoDriver/ChatGPT или уже в Telegram task flow.
 
+## Если smoke падает с prompt_box_not_found
+
+Запусти безопасный DOM probe:
+
+```bash
+astra-nexus-nodriver-dom-probe
+```
+
+Команда открывает ChatGPT через текущий профиль, не отправляет prompt и сохраняет
+только метаданные candidate-элементов:
+
+```text
+data/debug/nodriver/dom_probe.json
+```
+
+В выводе будут `current_url`, `page_title`, `ready_state`, `textarea_count`,
+`contenteditable_count`, `textbox_count`, `candidate_count` и видимые candidates.
+
+Для ручной диагностики можно временно включить:
+
+```env
+NODRIVER_KEEP_BROWSER_OPEN_ON_ERROR=true
+```
+
+Тогда smoke/ask при ошибке оставит Chrome открытым до Enter в терминале, после чего
+браузер будет закрыт и lock освобождён.
+
 ## Если профиль занят
 
 Ошибка `profile_locked` означает, что тот же profile уже использует живой процесс.
@@ -80,7 +108,8 @@ response: ...
 Что делать:
 
 1. Закрой предыдущий `astra-nexus-nodriver-login`, `astra-nexus-nodriver-smoke`,
-   `astra-nexus-nodriver-ask`, API deep health или Telegram/API provider.
+   `astra-nexus-nodriver-ask`, `astra-nexus-nodriver-dom-probe`, API deep health
+   или Telegram/API provider.
 2. Если процесс завис, заверши PID из сообщения.
 3. Выполни:
 

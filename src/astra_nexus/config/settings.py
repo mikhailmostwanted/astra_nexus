@@ -89,12 +89,20 @@ class Settings(BaseSettings):
             "NODRIVER_RESPONSE_TIMEOUT_SECONDS",
         ),
     )
-    nodriver_page_load_timeout_seconds: int = Field(
+    nodriver_page_load_timeout_seconds: float = Field(
         default=60,
         validation_alias=AliasChoices(
             "nodriver_page_load_timeout_seconds",
             "ASTRA_NODRIVER_PAGE_LOAD_TIMEOUT_SECONDS",
             "NODRIVER_PAGE_LOAD_TIMEOUT_SECONDS",
+        ),
+    )
+    nodriver_keep_browser_open_on_error: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "nodriver_keep_browser_open_on_error",
+            "ASTRA_NODRIVER_KEEP_BROWSER_OPEN_ON_ERROR",
+            "NODRIVER_KEEP_BROWSER_OPEN_ON_ERROR",
         ),
     )
     nodriver_agent_mode: str = Field(

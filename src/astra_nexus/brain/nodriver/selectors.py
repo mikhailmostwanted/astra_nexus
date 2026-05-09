@@ -7,9 +7,17 @@ LOGIN_MARKERS = [
 
 PROMPT_INPUT_SELECTORS = [
     "#prompt-textarea",
-    'div[contenteditable="true"]',
-    "div.ProseMirror",
+    "textarea#prompt-textarea",
     'textarea[data-testid="prompt-textarea"]',
+    '[data-testid="composer-textarea"]',
+    '[data-testid="composer-text-input"]',
+    "div#prompt-textarea",
+    'div[contenteditable="true"][data-lexical-editor="true"]',
+    '[contenteditable="true"][role="textbox"]',
+    '[role="textbox"]',
+    'div[contenteditable="true"]',
+    "textarea",
+    "div.ProseMirror",
 ]
 
 SEND_BUTTON_SELECTORS = [

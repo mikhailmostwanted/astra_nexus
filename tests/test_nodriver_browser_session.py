@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
-from astra_nexus.brain.nodriver.exceptions import NoDriverBrowserConnectError
+from astra_nexus.brain.nodriver.chatgpt_client import ChatGPTClient
+from astra_nexus.brain.nodriver.exceptions import (
+    NoDriverBrowserConnectError,
+    NoDriverPromptBoxNotFoundError,
+)
 from astra_nexus.config.settings import Settings
 
 
@@ -18,11 +22,20 @@ class FakeBrowser:
 
 
 class FakeTab:
-    def __init__(self, url: str, title: str = "ChatGPT") -> None:
+    def __init__(
+        self,
+        url: str,
+        title: str = "ChatGPT",
+        evaluations: dict[str, object] | None = None,
+    ) -> None:
         self.url = url
         self.title = title
+        self.evaluations = evaluations or {}
 
-    async def evaluate(self, script: str) -> str:
+    async def evaluate(self, script: str) -> object:
+        for marker, value in self.evaluations.items():
+            if marker in script:
+                return value
         if "window.location.href" in script:
             return self.url
         if "document.title" in script:
@@ -115,3 +128,38 @@ def test_browser_session_ensure_chatgpt_page_opens_when_current_tab_is_blank(
 
     assert isinstance(tab, FakeTab)
     assert browser.get_calls == [settings.nodriver_chatgpt_url]
+
+
+def test_login_unknown_without_composer_is_not_treated_as_login_ok(tmp_path: Path) -> None:
+    settings = Settings(
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_page_load_timeout_seconds=0.01,
+    )
+    session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
+    session.browser = FakeBrowser()
+    session.tab = FakeTab(
+        "https://chatgpt.com/",
+        evaluations={
+            "LOGIN_STATE_PROBE": {
+                "login_required": False,
+                "login_ok": False,
+                "reason": "unknown",
+            },
+            "PROMPT_CANDIDATE_PROBE": {
+                "ready_state": "complete",
+                "textarea_count": 0,
+                "contenteditable_count": 0,
+                "textbox_count": 0,
+                "candidate_count": 0,
+                "visible_candidates": [],
+                "marked_selector": None,
+            },
+            "document.readyState": "complete",
+        },
+    )
+    client = ChatGPTClient(settings=settings, session=session)
+
+    with pytest.raises(NoDriverPromptBoxNotFoundError) as exc:
+        asyncio.run(client.ask("Проверка"))
+
+    assert exc.value.details["login_state"]["reason"] == "unknown"

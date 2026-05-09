@@ -5,6 +5,10 @@ import logging
 from typing import Any
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
+from astra_nexus.brain.nodriver.dom_probe import (
+    LOGIN_STATE_PROBE_SCRIPT,
+    build_prompt_candidate_probe_script,
+)
 from astra_nexus.brain.nodriver.exceptions import (
     NoDriverLoginRequiredError,
     NoDriverPromptBoxNotFoundError,
@@ -15,7 +19,6 @@ from astra_nexus.brain.nodriver.exceptions import (
 from astra_nexus.brain.nodriver.response_parser import parse_last_assistant_response
 from astra_nexus.brain.nodriver.selectors import (
     ASSISTANT_MESSAGE_QUERY,
-    LOGIN_REQUIRED_QUERY,
     PROMPT_INPUT_SELECTORS,
     SEND_BUTTON_SELECTORS,
     STOP_BUTTON_SELECTORS,
@@ -68,24 +71,30 @@ class ChatGPTClient:
         self._log_stage("chatgpt.page.loaded", debug_context, url=await self.session.current_url())
 
         self._log_stage("chatgpt.login.check.started", debug_context)
-        if await self._login_required(tab):
+        login_state = await self._login_state(tab)
+        if login_state.get("login_required"):
             raise NoDriverLoginRequiredError(
                 stage="chatgpt.login.check.started",
                 url=await self.session.current_url(),
                 page_title=await self.session.current_title(),
-                details=await self._page_diagnostics(tab),
+                details=await self._page_diagnostics(tab, login_state=login_state),
             )
-        self._log_stage("chatgpt.login.check.ok", debug_context)
+        if login_state.get("login_ok"):
+            self._log_stage(
+                "chatgpt.login.check.ok",
+                debug_context,
+                reason=login_state.get("reason"),
+            )
+        else:
+            self._log_stage(
+                "chatgpt.login.check.unknown",
+                debug_context,
+                reason=login_state.get("reason"),
+            )
 
         before_count = len(await self._assistant_messages(tab))
         self._log_stage("chatgpt.prompt_box.search.started", debug_context)
-        prompt_input = await self._first_selector(
-            tab,
-            PROMPT_INPUT_SELECTORS,
-            stage="chatgpt.prompt_box.search.started",
-            kind="prompt_box",
-        )
-        self._log_stage("chatgpt.prompt_box.found", debug_context)
+        prompt_input = await self._wait_for_prompt_box(tab, debug_context, login_state)
 
         self._log_stage("chatgpt.prompt.insert.started", debug_context)
         await self._fill_prompt(prompt_input, prompt)
@@ -114,11 +123,12 @@ class ChatGPTClient:
         self._log_stage("chatgpt.response.parse.ok", debug_context)
         return response
 
-    async def _login_required(self, tab: Any) -> bool:
+    async def _login_state(self, tab: Any) -> dict[str, Any]:
         try:
-            return bool(await tab.evaluate(LOGIN_REQUIRED_QUERY))
+            result = await tab.evaluate(LOGIN_STATE_PROBE_SCRIPT)
         except Exception:
-            return False
+            return {"login_required": False, "login_ok": False, "reason": "probe_failed"}
+        return dict(result or {})
 
     async def _assistant_messages(self, tab: Any) -> list[str]:
         result = await tab.evaluate(ASSISTANT_MESSAGE_QUERY)
@@ -154,6 +164,97 @@ class ChatGPTClient:
                 **kwargs,
             )
         raise NoDriverSelectorNotFoundError(message, **kwargs)
+
+    async def _wait_for_prompt_box(
+        self,
+        tab: Any,
+        debug_context: dict[str, Any],
+        login_state: dict[str, Any],
+    ) -> Any:
+        self._log_stage("chatgpt.ui.wait.started", debug_context)
+        deadline = (
+            asyncio.get_running_loop().time() + self.settings.nodriver_page_load_timeout_seconds
+        )
+        attempts = 0
+        last_summary: dict[str, Any] = {}
+
+        while asyncio.get_running_loop().time() <= deadline:
+            attempts += 1
+            ready_state = await self._ready_state(tab)
+            self._log_stage(
+                "chatgpt.ui.wait.ready_state",
+                debug_context,
+                ready_state=ready_state,
+                attempts=attempts,
+            )
+            if ready_state != "complete":
+                await self._sleep_until_next_attempt(deadline)
+                continue
+
+            last_summary = await self._prompt_candidate_summary(tab)
+            marked_selector = last_summary.get("marked_selector")
+            if marked_selector:
+                element = await tab.query_selector(str(marked_selector))
+                if element is not None:
+                    self._log_stage(
+                        "chatgpt.prompt_box.found",
+                        debug_context,
+                        attempts=attempts,
+                        candidate_count=last_summary.get("candidate_count"),
+                    )
+                    return element
+
+            self._log_stage(
+                "chatgpt.prompt_box.search.retry",
+                debug_context,
+                attempts=attempts,
+                ready_state=ready_state,
+                candidate_count=last_summary.get("candidate_count", 0),
+            )
+            await self._sleep_until_next_attempt(deadline)
+
+        details = {
+            **last_summary,
+            "selectors_tried": PROMPT_INPUT_SELECTORS,
+            "login_state": login_state,
+            "attempts": attempts,
+        }
+        raise NoDriverPromptBoxNotFoundError(
+            "Поле ввода ChatGPT не найдено.",
+            stage="chatgpt.prompt_box.search.started",
+            url=await self.session.current_url(),
+            page_title=await self.session.current_title(),
+            selector=", ".join(PROMPT_INPUT_SELECTORS),
+            details=details,
+        )
+
+    async def _ready_state(self, tab: Any) -> str:
+        try:
+            value = await tab.evaluate("document.readyState")
+        except Exception:
+            return "unknown"
+        return str(value or "unknown")
+
+    async def _prompt_candidate_summary(self, tab: Any) -> dict[str, Any]:
+        try:
+            result = await tab.evaluate(build_prompt_candidate_probe_script())
+        except Exception:
+            return {
+                "ready_state": "unknown",
+                "textarea_count": 0,
+                "contenteditable_count": 0,
+                "textbox_count": 0,
+                "candidate_count": 0,
+                "visible_candidates": [],
+                "marked_selector": None,
+            }
+        return dict(result or {})
+
+    async def _sleep_until_next_attempt(self, deadline: float) -> None:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return
+        await asyncio.sleep(min(0.5, remaining))
 
     async def _fill_prompt(self, element: Any, prompt: str) -> None:
         if hasattr(element, "set_text"):
@@ -201,32 +302,20 @@ class ChatGPTClient:
         if exc.page_title is None:
             exc.page_title = await self.session.current_title()
 
-    async def _page_diagnostics(self, tab: Any) -> dict[str, Any]:
+    async def _page_diagnostics(
+        self,
+        tab: Any,
+        *,
+        login_state: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         try:
-            result = await tab.evaluate(
-                """
-(() => {
-  const text = document.body ? document.body.innerText.toLowerCase() : '';
-  const promptSelector = '#prompt-textarea,[contenteditable="true"],div.ProseMirror';
-  const prompt = document.querySelector(promptSelector);
-  const login = document.querySelector('a[href*="/auth/login"],button[data-testid="login-button"]');
-  const verification =
-    text.includes('verify you are human') ||
-    text.includes('checking your browser') ||
-    text.includes('cloudflare') ||
-    Boolean(document.querySelector('[id*="challenge"], iframe[src*="challenges.cloudflare.com"]'));
-  return {
-    prompt_present: Boolean(prompt),
-    login_present: Boolean(login),
-    verification_present: Boolean(verification),
-    app_root_present: Boolean(document.querySelector('main, [data-testid]')),
-  };
-})()
-"""
-            )
+            result = await tab.evaluate(build_prompt_candidate_probe_script())
         except Exception:
-            return {}
-        return dict(result or {})
+            result = {}
+        diagnostics = dict(result or {})
+        if login_state is not None:
+            diagnostics["login_state"] = login_state
+        return diagnostics
 
     def _log_stage(
         self,

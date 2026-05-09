@@ -118,6 +118,15 @@ def test_nodriver_provider_creates_debug_report_on_nodriver_error(tmp_path: Path
                 stage="chatgpt.prompt_box.search.started",
                 url="https://chatgpt.com/",
                 selector="#prompt-textarea",
+                details={
+                    "ready_state": "complete",
+                    "textarea_count": 0,
+                    "contenteditable_count": 0,
+                    "textbox_count": 0,
+                    "candidate_count": 0,
+                    "selectors_tried": ["#prompt-textarea"],
+                    "visible_candidates": [],
+                },
             )
         ),
     )
@@ -146,6 +155,13 @@ def test_nodriver_provider_creates_debug_report_on_nodriver_error(tmp_path: Path
     assert payload["message"] == "Поле ввода ChatGPT не найдено."
     assert payload["url"] == "https://chatgpt.com/"
     assert payload["selector"] == "#prompt-textarea"
+    assert payload["ready_state"] == "complete"
+    assert payload["textarea_count"] == 0
+    assert payload["contenteditable_count"] == 0
+    assert payload["textbox_count"] == 0
+    assert payload["candidate_count"] == 0
+    assert payload["selectors_tried"] == ["#prompt-textarea"]
+    assert payload["visible_candidates"] == []
     assert "screenshot_path" not in payload
 
 

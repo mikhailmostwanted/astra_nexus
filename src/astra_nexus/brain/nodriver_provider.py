@@ -148,6 +148,17 @@ class NoDriverProvider(BrainProvider):
             payload["page_title"] = exc.page_title
         if exc.details:
             payload["details"] = exc.details
+            for key in (
+                "ready_state",
+                "textarea_count",
+                "contenteditable_count",
+                "textbox_count",
+                "candidate_count",
+                "selectors_tried",
+                "visible_candidates",
+            ):
+                if key in exc.details:
+                    payload[key] = exc.details[key]
         if screenshot_path is not None:
             payload["screenshot_path"] = str(screenshot_path)
 

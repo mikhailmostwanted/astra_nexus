@@ -113,6 +113,12 @@ astra-nexus-nodriver-diagnose
 Если Telegram `/task` падает на NoDriver, смотри сообщение с `stage/error_code` и файл
 `data/workspaces/{task_id}/debug/nodriver_error.json`.
 
+Если smoke падает с `prompt_box_not_found`, собери безопасный DOM summary:
+
+```bash
+astra-nexus-nodriver-dom-probe
+```
+
 ## Тесты и качество
 
 ```bash
