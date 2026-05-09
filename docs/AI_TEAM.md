@@ -60,6 +60,64 @@ Pipeline по умолчанию:
 `FakeTeamProvider` используется в unit-тестах. Он возвращает детерминированные ответы и
 умеет симулировать ошибку выбранного агента через `fail_on`.
 
+## CLI smoke
+
+Локальный smoke-запуск AI-команды выполняется командой:
+
+```bash
+astra-nexus-team-smoke "Составь краткий план улучшения Astra Nexus."
+```
+
+Если текст задачи не передан, команда использует дефолт:
+
+```text
+Составь краткий план улучшения Astra Nexus.
+```
+
+Команда использует только `FakeTeamProvider`, запускает `AsyncTeamOrchestrator`, сохраняет
+workspace run и печатает:
+
+- `status`
+- `run_id`
+- `final_result`
+- `workspace_path`
+
+## Team run workspace
+
+Каждый smoke-run сохраняется в:
+
+```text
+data/team_runs/<run_id>/
+```
+
+Структура папки:
+
+```text
+data/team_runs/<run_id>/
+  run.json
+  events.jsonl
+  final.md
+  agent_results/
+    coordinator.md
+    analyst.md
+    critic.md
+    editor.md
+    qa_controller.md
+    final_composer.md
+```
+
+`run.json` содержит общий summary run: `run_id`, `status`, `user_task`, временные поля,
+финальный результат и краткий список agent task/result summary.
+
+`events.jsonl` содержит одну JSON-строку на событие: timestamp, event type, run id,
+роль агента для agent-событий, message и details. Этот формат готовит слой к будущему
+Telegram log/chat отображению без подключения Telegram на текущем этапе.
+
+`agent_results/*.md` содержит человекочитаемый результат каждого агента: имя, роль,
+исходную задачу, статус и текст результата.
+
+`final.md` содержит финальный ответ `final_composer`.
+
 ## Что пока не реализовано
 
 - Telegram-группа и Telegram task flow.
@@ -68,4 +126,3 @@ Pipeline по умолчанию:
 - NoDriver adapter для AI-команды.
 - Self-improving/Codex-режим.
 - Storage/migrations для team-сущностей.
-

@@ -18,6 +18,7 @@ from astra_nexus.team.profiles import (
     default_profiles_by_role,
 )
 from astra_nexus.team.provider import TeamProvider, TeamProviderError
+from astra_nexus.team.workspace import TeamRunWorkspace
 
 __all__ = [
     "DEFAULT_AGENT_PIPELINE",
@@ -37,5 +38,6 @@ __all__ = [
     "TeamProviderError",
     "TeamRun",
     "TeamRunOutcome",
+    "TeamRunWorkspace",
     "default_profiles_by_role",
 ]
