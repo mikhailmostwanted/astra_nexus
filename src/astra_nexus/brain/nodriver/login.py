@@ -4,6 +4,12 @@ import asyncio
 import logging
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
+from astra_nexus.brain.nodriver.dom_probe import (
+    collect_dom_probe,
+    is_chatgpt_composer_ready,
+    is_login_required,
+    write_dom_probe_report,
+)
 from astra_nexus.brain.nodriver.exceptions import NoDriverProviderError
 from astra_nexus.config.settings import load_settings
 from astra_nexus.utils.logging import configure_logging
@@ -21,26 +27,58 @@ async def amain() -> int:
         await session.open_chatgpt()
         await asyncio.to_thread(
             input,
-            "Войди в ChatGPT в открывшемся окне. Когда закончишь, нажми Enter здесь "
-            "для завершения.",
+            "Войди в ChatGPT в открывшемся окне. Когда увидишь поле ввода ChatGPT, нажми Enter.",
         )
-    except KeyboardInterrupt:
+        payload = await collect_dom_probe(session)
+        report_path = write_dom_probe_report(settings, payload)
+        print(f"ready_state: {payload.get('ready_state')}")
+        print(f"textarea_count: {payload.get('textarea_count')}")
+        print(f"contenteditable_count: {payload.get('contenteditable_count')}")
+        print(f"textbox_count: {payload.get('textbox_count')}")
+        print(f"login_buttons_count: {payload.get('login_buttons_count')}")
+        print(f"candidate_count: {payload.get('candidate_count')}")
+        print(f"login_state: {payload.get('login_state')}")
+        print(f"dom_probe: {report_path}")
+        if is_chatgpt_composer_ready(payload):
+            print("status: ok")
+            print("message: browser profile сохранён, поле ввода ChatGPT найдено")
+            return 0
+        if is_login_required(payload):
+            print("status: login_required")
+            print("message: вход в ChatGPT не подтверждён")
+        else:
+            print("status: chatgpt_ui_not_ready")
+            print("message: поле ввода ChatGPT не найдено")
+        if settings.nodriver_keep_browser_open_on_error:
+            await asyncio.to_thread(
+                input,
+                "Браузер оставлен открытым. Проверь страницу и нажми Enter для закрытия.",
+            )
+        return 1
+    except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Ручная подготовка NoDriver profile остановлена пользователем.")
+        print("Остановлено пользователем.")
         return 130
     except NoDriverProviderError as exc:
         print(f"status: {exc.status}")
         print(f"message: {exc}")
         print(f"action: {exc.action}")
+        if settings.nodriver_keep_browser_open_on_error:
+            await asyncio.to_thread(
+                input,
+                "Браузер оставлен открытым. Проверь страницу и нажми Enter для закрытия.",
+            )
         return 1
     finally:
         await session.stop()
-    print("status: ok")
-    print("message: browser profile сохранён")
-    return 0
 
 
 def main() -> None:
-    raise SystemExit(asyncio.run(amain()))
+    try:
+        raise SystemExit(asyncio.run(amain()))
+    except KeyboardInterrupt:
+        print("Остановлено пользователем.")
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

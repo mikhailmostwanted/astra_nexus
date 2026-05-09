@@ -86,13 +86,42 @@ def test_dom_probe_normalizes_candidates_to_list_of_dicts() -> None:
     payload = normalize_dom_probe_payload(
         {
             "candidates": {
-                "selector": {"type": "string", "value": "#prompt-textarea"},
-                "visible": {"type": "boolean", "value": True},
+                "selectorHint": {"type": "string", "value": "#prompt-textarea"},
+                "isVisible": {"type": "boolean", "value": True},
             }
         }
     )
 
-    assert payload["candidates"] == [{"selector": "#prompt-textarea", "visible": True}]
+    assert payload["candidates"][0]["selector"] == "#prompt-textarea"
+    assert payload["candidates"][0]["visible"] is True
+
+
+def test_dom_probe_plain_object_does_not_turn_counts_into_none() -> None:
+    payload = normalize_dom_probe_payload(
+        {
+            "url": "https://chatgpt.com/",
+            "title": "ChatGPT",
+            "readyState": "complete",
+            "textareaCount": 1,
+            "contenteditableCount": 0,
+            "textboxCount": 1,
+            "loginButtonCount": 0,
+            "candidate_count": 1,
+            "loginState": "logged_in",
+            "composerFound": True,
+            "candidates": [],
+        }
+    )
+
+    assert payload["current_url"] == "https://chatgpt.com/"
+    assert payload["page_title"] == "ChatGPT"
+    assert payload["ready_state"] == "complete"
+    assert payload["textarea_count"] == 1
+    assert payload["contenteditable_count"] == 0
+    assert payload["textbox_count"] == 1
+    assert payload["login_buttons_count"] == 0
+    assert payload["candidate_count"] == 1
+    assert payload["login_state"] == "logged_in"
 
 
 def test_dom_probe_run_stops_session_when_probe_raises(monkeypatch, tmp_path, capsys) -> None:
@@ -115,6 +144,7 @@ def test_dom_probe_run_stops_session_when_probe_raises(monkeypatch, tmp_path, ca
         lambda: Settings(
             data_dir=tmp_path / "data",
             nodriver_user_data_dir=tmp_path / "profile",
+            nodriver_keep_browser_open_on_error=False,
         ),
     )
     monkeypatch.setattr(dom_probe, "BrowserSession", FakeSession)
@@ -126,3 +156,37 @@ def test_dom_probe_run_stops_session_when_probe_raises(monkeypatch, tmp_path, ca
     assert exit_code == 1
     assert stopped is True
     assert "status: dom_probe_failed" in output
+
+
+def test_dom_probe_cancelled_error_returns_without_traceback(monkeypatch, tmp_path, capsys) -> None:
+    stopped = False
+
+    class FakeSession:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def stop(self) -> None:
+            nonlocal stopped
+            stopped = True
+
+    async def cancelled_collect(_session) -> dict:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        dom_probe,
+        "load_settings",
+        lambda: Settings(
+            data_dir=tmp_path / "data",
+            nodriver_user_data_dir=tmp_path / "profile",
+            nodriver_keep_browser_open_on_error=False,
+        ),
+    )
+    monkeypatch.setattr(dom_probe, "BrowserSession", FakeSession)
+    monkeypatch.setattr(dom_probe, "collect_dom_probe", cancelled_collect)
+
+    exit_code = asyncio.run(dom_probe.run())
+
+    output = capsys.readouterr().out
+    assert exit_code == 130
+    assert stopped is True
+    assert "Остановлено пользователем." in output

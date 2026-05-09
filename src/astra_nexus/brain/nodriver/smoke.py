@@ -5,8 +5,15 @@ from typing import Any
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
 from astra_nexus.brain.nodriver.chatgpt_client import ChatGPTClient
-from astra_nexus.brain.nodriver.dom_probe import collect_dom_probe, write_dom_probe_report
+from astra_nexus.brain.nodriver.dom_probe import (
+    collect_dom_probe,
+    is_chatgpt_composer_ready,
+    is_login_required,
+    write_dom_probe_report,
+)
 from astra_nexus.brain.nodriver.exceptions import (
+    NoDriverChatGPTUINotReadyError,
+    NoDriverLoginRequiredError,
     NoDriverPromptBoxNotFoundError,
     NoDriverProviderError,
 )
@@ -35,9 +42,30 @@ async def amain() -> int:
         print(f"textarea_count: {report_payload.get('textarea_count')}")
         print(f"contenteditable_count: {report_payload.get('contenteditable_count')}")
         print(f"textbox_count: {report_payload.get('textbox_count')}")
+        print(f"login_buttons_count: {report_payload.get('login_buttons_count')}")
         print(f"candidate_count: {report_payload.get('candidate_count')}")
+        print(f"login_state: {report_payload.get('login_state')}")
         print(f"dom_probe: {report_path}")
+        if is_login_required(report_payload):
+            raise NoDriverLoginRequiredError(
+                "Нужен вход в ChatGPT.",
+                stage="chatgpt.login.check.started",
+                url=report_payload.get("current_url"),
+                page_title=report_payload.get("page_title"),
+                details=report_payload,
+            )
+        if not is_chatgpt_composer_ready(report_payload):
+            raise NoDriverChatGPTUINotReadyError(
+                "Интерфейс ChatGPT Web не готов: composer не найден.",
+                stage="chatgpt.prompt_box.search.started",
+                url=report_payload.get("current_url"),
+                page_title=report_payload.get("page_title"),
+                details=report_payload,
+            )
         result = await client.ask(SMOKE_PROMPT)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        exit_code = 130
+        print("Остановлено пользователем.")
     except NoDriverProviderError as exc:
         error = exc
         exit_code = 1
@@ -60,7 +88,9 @@ async def amain() -> int:
             print(f"textarea_count: {report_payload.get('textarea_count')}")
             print(f"contenteditable_count: {report_payload.get('contenteditable_count')}")
             print(f"textbox_count: {report_payload.get('textbox_count')}")
+            print(f"login_buttons_count: {report_payload.get('login_buttons_count')}")
             print(f"candidate_count: {report_payload.get('candidate_count')}")
+            print(f"login_state: {report_payload.get('login_state')}")
             print(f"dom_probe: {report_path}")
         print(f"action: {exc.action}")
     finally:
@@ -79,7 +109,11 @@ async def amain() -> int:
 
 
 def main() -> None:
-    raise SystemExit(asyncio.run(amain()))
+    try:
+        raise SystemExit(asyncio.run(amain()))
+    except KeyboardInterrupt:
+        print("Остановлено пользователем.")
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

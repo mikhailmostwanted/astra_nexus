@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
-from astra_nexus.brain.nodriver.evaluate import unwrap_evaluate_result, unwrap_remote_value
+from astra_nexus.brain.nodriver.evaluate import evaluate_value, unwrap_remote_value
 from astra_nexus.brain.nodriver.exceptions import NoDriverPageLoadError, NoDriverProviderError
 from astra_nexus.brain.nodriver.selectors import PROMPT_INPUT_SELECTORS
 from astra_nexus.config.settings import Settings, load_settings
@@ -37,7 +37,17 @@ def choose_visible_candidate(candidates: list[dict[str, Any]]) -> dict[str, Any]
 def normalize_candidate(candidate: Any) -> dict[str, Any]:
     candidate = unwrap_remote_value(candidate)
     if isinstance(candidate, dict):
-        return {str(key): unwrap_remote_value(value) for key, value in candidate.items()}
+        payload = {str(key): unwrap_remote_value(value) for key, value in candidate.items()}
+        payload.setdefault("tag", str(payload.get("tagName") or "").lower())
+        payload.setdefault("tag_name", payload.get("tagName") or payload.get("tag"))
+        payload.setdefault("data_testid", payload.get("data-testid") or payload.get("dataTestid"))
+        payload.setdefault("aria_label", payload.get("aria-label") or payload.get("ariaLabel"))
+        payload.setdefault("class_name", payload.get("className"))
+        payload.setdefault("selector", payload.get("selectorHint") or payload.get("selector_hint"))
+        payload.setdefault("selector_hint", payload.get("selector"))
+        payload.setdefault("visible", payload.get("isVisible"))
+        payload.setdefault("is_visible", payload.get("visible"))
+        return payload
     return {"raw": "" if candidate is None else str(candidate)}
 
 
@@ -51,17 +61,98 @@ def normalize_candidates(candidates: Any) -> list[dict[str, Any]]:
 
 
 def normalize_dom_probe_payload(summary: Any) -> dict[str, Any]:
-    payload = unwrap_evaluate_result(summary)
+    payload = unwrap_remote_value(summary)
     if not isinstance(payload, dict):
         payload = {"raw": payload}
     else:
         payload = {str(key): unwrap_remote_value(value) for key, value in payload.items()}
 
     payload["candidates"] = normalize_candidates(payload.get("candidates"))
-    payload["visible_candidates"] = normalize_candidates(payload.get("visible_candidates"))
+    payload["visible_candidates"] = normalize_candidates(
+        _first_present(payload, "visible_candidates", "visibleCandidates")
+    )
+    payload["current_url"] = _first_present(payload, "current_url", "url")
+    payload["page_title"] = _first_present(payload, "page_title", "title")
+    payload["ready_state"] = _first_present(payload, "ready_state", "readyState")
+    payload["textarea_count"] = _first_present(payload, "textarea_count", "textareaCount")
+    payload["contenteditable_count"] = _first_present(
+        payload,
+        "contenteditable_count",
+        "contenteditableCount",
+    )
+    payload["textbox_count"] = _first_present(payload, "textbox_count", "textboxCount")
+    payload["login_button_count"] = _first_present(
+        payload,
+        "login_button_count",
+        "loginButtonCount",
+    )
+    payload["login_buttons_count"] = payload["login_button_count"]
+    payload["account_proof_count"] = _first_present(
+        payload,
+        "account_proof_count",
+        "accountProofCount",
+    )
+    if payload["account_proof_count"] is None and "account_present" in payload:
+        payload["account_proof_count"] = 1 if payload["account_present"] else 0
+    payload["composer_found"] = bool(
+        _first_present(payload, "composer_found", "composerFound", "composer_present")
+    )
+    payload["marked_selector"] = _first_present(payload, "marked_selector", "markedSelector")
+    payload["login_state"] = _first_present(payload, "login_state", "loginState")
+    if not payload["login_state"]:
+        if payload.get("login_required"):
+            payload["login_state"] = "login_required"
+        elif payload.get("login_ok"):
+            payload["login_state"] = "logged_in"
+        else:
+            payload["login_state"] = "unknown"
     if "candidate_count" not in payload:
         payload["candidate_count"] = len(payload["candidates"])
     return payload
+
+
+def _first_present(payload: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in payload:
+            return payload[key]
+    return None
+
+
+def is_chatgpt_composer_ready(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("composer_found") or payload.get("marked_selector"))
+
+
+def is_login_required(payload: dict[str, Any]) -> bool:
+    return (
+        payload.get("login_state") == "login_required"
+        or int(payload.get("login_button_count") or 0) > 0
+    )
+
+
+def login_state_from_probe(payload: dict[str, Any]) -> dict[str, Any]:
+    login_state = str(payload.get("login_state") or "unknown")
+    composer_ready = is_chatgpt_composer_ready(payload)
+    login_required = is_login_required(payload)
+    if composer_ready:
+        reason = "composer_visible"
+    elif login_required:
+        reason = "login_controls_visible"
+    elif login_state == "logged_in":
+        reason = "account_proof_visible"
+    else:
+        reason = login_state
+    return {
+        "status": login_state,
+        "login_required": login_required,
+        "login_ok": login_state == "logged_in",
+        "reason": reason,
+        "ready_state": payload.get("ready_state"),
+        "current_url": payload.get("current_url"),
+        "page_title": payload.get("page_title"),
+        "login_button_count": payload.get("login_button_count") or 0,
+        "composer_present": composer_ready,
+        "account_present": int(payload.get("account_proof_count") or 0) > 0,
+    }
 
 
 def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> str:
@@ -74,6 +165,8 @@ def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> s
   const markerAttr = {marker_json};
   const selectors = {selectors_json};
   const words = ['prompt', 'composer', 'textarea', 'input', 'editor'];
+  const loginWords = /\\b(log in|login|sign in|sign up)\\b/i;
+  const accountWords = /\\b(account|profile|settings|user menu|avatar)\\b/i;
   document.querySelectorAll('[' + markerAttr + ']').forEach((node) => {{
     node.removeAttribute(markerAttr);
   }});
@@ -84,13 +177,13 @@ def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> s
   function visibleInfo(node) {{
     const rect = node.getBoundingClientRect();
     const style = window.getComputedStyle(node);
-    const visible =
+    const isVisible =
       rect.width > 0 &&
       rect.height > 0 &&
       style.display !== 'none' &&
       style.visibility !== 'hidden';
     return {{
-      visible,
+      isVisible,
       width: Math.round(rect.width),
       height: Math.round(rect.height),
       display: style.display,
@@ -105,20 +198,21 @@ def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> s
 
   function describe(node, source, selector) {{
     const info = visibleInfo(node);
-    const tag = (node.tagName || '').toLowerCase();
+    const tagName = (node.tagName || '').toLowerCase();
     const id = node.id || '';
     const role = node.getAttribute('role') || '';
     const dataTestid = node.getAttribute('data-testid') || '';
     return {{
       source,
-      selector,
-      tag,
+      selectorHint: selector,
+      tagName,
       id,
       role,
-      data_testid: dataTestid,
-      class_name: safeClassName(node),
+      dataTestid,
+      ariaLabel: node.getAttribute('aria-label') || '',
+      className: safeClassName(node),
       contenteditable: node.getAttribute('contenteditable') || '',
-      lexical_editor: node.getAttribute('data-lexical-editor') || '',
+      lexicalEditor: node.getAttribute('data-lexical-editor') || '',
       ...info,
     }};
   }}
@@ -156,138 +250,73 @@ def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> s
     }}
   }});
 
-  const visibleCandidates = candidates
-    .map((candidate) => candidate.meta)
-    .filter((candidate) => candidate.visible);
-  const chosen = candidates.find((candidate) => candidate.meta.visible);
-  if (chosen) {{
-    chosen.node.setAttribute(markerAttr, 'true');
-  }}
-
-  return {{
-    ready_state: document.readyState,
-    textarea_count: document.querySelectorAll('textarea').length,
-    contenteditable_count: document.querySelectorAll('[contenteditable="true"]').length,
-    textbox_count: document.querySelectorAll('[role="textbox"]').length,
-    candidate_count: candidates.length,
-    candidates: candidates.map((candidate) => candidate.meta).slice(0, 25),
-    visible_candidates: visibleCandidates.slice(0, 10),
-    marked_selector: chosen ? '[' + markerAttr + '="true"]' : null,
-  }};
-}})()
-"""
-
-
-LOGIN_STATE_PROBE_SCRIPT = """
-/* LOGIN_STATE_PROBE */
-(() => {
-  const readyState = document.readyState;
-  const currentUrl = window.location.href;
-  const title = document.title || '';
-  const loginWords = /\\b(log in|login|sign in|sign up)\\b/i;
-  const visible = (node) => {
-    if (!node) {
-      return false;
-    }
-    const rect = node.getBoundingClientRect();
-    const style = window.getComputedStyle(node);
-    return (
-      rect.width > 0 &&
-      rect.height > 0 &&
-      style.display !== 'none' &&
-      style.visibility !== 'hidden'
-    );
-  };
-  const loginNodes = Array.from(document.querySelectorAll('a, button, input')).filter((node) => {
-    const label = [
+  function labelFor(node) {{
+    return [
       node.innerText || '',
       node.value || '',
       node.getAttribute('aria-label') || '',
       node.getAttribute('data-testid') || '',
       node.getAttribute('href') || '',
+      node.id || '',
+      typeof node.className === 'string' ? node.className : '',
     ].join(' ');
-    return visible(node) && loginWords.test(label);
-  });
-  const composer = Array.from(
-    document.querySelectorAll(
-      '#prompt-textarea, textarea, [contenteditable="true"], [role="textbox"]'
-    )
-  ).find(visible);
-  const accountNode = Array.from(
-    document.querySelectorAll(
-      [
-        '[data-testid*="profile"]',
-        '[data-testid*="account"]',
-        'nav',
-        'aside',
-        'button[aria-label*="Account"]',
-      ].join(', ')
-    )
-  ).find(visible);
-  if (composer) {
-    return {
-      status: 'logged_in',
-      login_required: false,
-      login_ok: true,
-      reason: 'composer_visible',
-      ready_state: readyState,
-      current_url: currentUrl,
-      page_title: title,
-      login_button_count: loginNodes.length,
-      composer_present: true,
-      account_present: Boolean(accountNode),
-    };
-  }
-  if (loginNodes.length > 0) {
-    return {
-      status: 'login_required',
-      login_required: true,
-      login_ok: false,
-      reason: 'login_controls_visible',
-      ready_state: readyState,
-      current_url: currentUrl,
-      page_title: title,
-      login_button_count: loginNodes.length,
-      composer_present: false,
-      account_present: Boolean(accountNode),
-    };
-  }
-  if (accountNode) {
-    return {
-      status: 'logged_in',
-      login_required: false,
-      login_ok: true,
-      reason: 'account_or_nav_visible',
-      ready_state: readyState,
-      current_url: currentUrl,
-      page_title: title,
-      login_button_count: 0,
-      composer_present: false,
-      account_present: true,
-    };
-  }
-  const host = window.location.hostname || '';
-  const looksLikeChatGPT = host === 'chatgpt.com' || host.endsWith('.chatgpt.com');
-  return {
-    status: 'unknown',
-    login_required: false,
-    login_ok: false,
-    reason: looksLikeChatGPT && /chatgpt/i.test(title) && readyState !== 'complete'
-      ? 'page_loading'
-      : 'unknown_without_composer',
-    ready_state: readyState,
-    current_url: currentUrl,
-    page_title: title,
-    login_button_count: 0,
-    composer_present: false,
-    account_present: false,
-  };
-})()
+  }}
+
+  function isVisible(node) {{
+    return visibleInfo(node).isVisible;
+  }}
+
+  const loginButtons = Array.from(
+    document.querySelectorAll('a, button, input, [role="button"]')
+  ).filter((node) => isVisible(node) && loginWords.test(labelFor(node)));
+  const accountProofNodes = Array.from(
+    document.querySelectorAll('button, a, [role="button"], [aria-label], [data-testid]')
+  ).filter((node) => isVisible(node) && accountWords.test(labelFor(node)));
+  const visibleCandidates = candidates
+    .map((candidate) => candidate.meta)
+    .filter((candidate) => candidate.isVisible);
+  const chosen = candidates.find((candidate) => candidate.meta.isVisible);
+  if (chosen) {{
+    chosen.node.setAttribute(markerAttr, 'true');
+  }}
+  let loginState = 'unknown';
+  if (chosen) {{
+    loginState = 'logged_in';
+  }} else if (loginButtons.length > 0) {{
+    loginState = 'login_required';
+  }} else if (accountProofNodes.length > 0) {{
+    loginState = 'logged_in';
+  }} else if (document.readyState !== 'complete') {{
+    loginState = 'page_loading';
+  }} else {{
+    loginState = 'chatgpt_ui_not_ready';
+  }}
+
+  return {{
+    url: window.location.href,
+    title: document.title || '',
+    readyState: document.readyState,
+    textareaCount: document.querySelectorAll('textarea').length,
+    contenteditableCount: document.querySelectorAll('[contenteditable="true"]').length,
+    textboxCount: document.querySelectorAll('[role="textbox"]').length,
+    loginButtonCount: loginButtons.length,
+    accountProofCount: accountProofNodes.length,
+    candidate_count: candidates.length,
+    composerFound: Boolean(chosen),
+    loginState,
+    candidates: candidates.map((candidate) => candidate.meta).slice(0, 25),
+    visibleCandidates: visibleCandidates.slice(0, 10),
+    markedSelector: chosen ? '[' + markerAttr + '="true"]' : null,
+  }};
+}})()
 """
 
 
+LOGIN_STATE_PROBE_SCRIPT = "/* LOGIN_STATE_PROBE */\n" + build_prompt_candidate_probe_script()
+
+
 async def evaluate_script(tab: Any, script: str) -> Any:
-    return unwrap_evaluate_result(await tab.evaluate(script))
+    return await evaluate_value(tab, script)
 
 
 async def read_ready_state(tab: Any) -> str:
@@ -365,9 +394,14 @@ async def run() -> int:
     payload: dict[str, Any] | None = None
     report_path: Path | None = None
     error: Exception | None = None
+    interrupted = False
     try:
         payload = await collect_dom_probe(session)
         report_path = write_dom_probe_report(settings, payload)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        interrupted = True
+        error = KeyboardInterrupt()
+        print("Остановлено пользователем.")
     except NoDriverProviderError as exc:
         error = exc
         print(f"status: {exc.error_code}")
@@ -381,13 +415,15 @@ async def run() -> int:
         print(f"message: {exc}")
         print("action: проверь страницу ChatGPT и повтори astra-nexus-nodriver-dom-probe")
     finally:
-        if error is not None and settings.nodriver_keep_browser_open_on_error:
+        if error is not None and not interrupted and settings.nodriver_keep_browser_open_on_error:
             await asyncio.to_thread(
                 input,
                 "Браузер оставлен открытым. Проверь страницу и нажми Enter для закрытия.",
             )
         await session.stop()
 
+    if interrupted:
+        return 130
     if error is not None:
         return 1
     if payload is None or report_path is None:
@@ -403,7 +439,9 @@ async def run() -> int:
     print(f"textarea_count: {payload.get('textarea_count')}")
     print(f"contenteditable_count: {payload.get('contenteditable_count')}")
     print(f"textbox_count: {payload.get('textbox_count')}")
+    print(f"login_buttons_count: {payload.get('login_buttons_count')}")
     print(f"candidate_count: {payload.get('candidate_count')}")
+    print(f"login_state: {payload.get('login_state')}")
     for candidate in normalize_candidates(payload.get("candidates", [])):
         print(
             "candidate: "
@@ -420,7 +458,11 @@ async def run() -> int:
 
 
 def main() -> None:
-    raise SystemExit(asyncio.run(run()))
+    try:
+        raise SystemExit(asyncio.run(run()))
+    except KeyboardInterrupt:
+        print("Остановлено пользователем.")
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

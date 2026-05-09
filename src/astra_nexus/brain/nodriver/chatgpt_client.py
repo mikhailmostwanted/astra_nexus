@@ -9,6 +9,7 @@ from astra_nexus.brain.nodriver.dom_probe import (
     LOGIN_STATE_PROBE_SCRIPT,
     build_prompt_candidate_probe_script,
     evaluate_script,
+    login_state_from_probe,
     normalize_dom_probe_payload,
 )
 from astra_nexus.brain.nodriver.exceptions import (
@@ -131,7 +132,7 @@ class ChatGPTClient:
             result = await evaluate_script(tab, LOGIN_STATE_PROBE_SCRIPT)
         except Exception:
             return {"login_required": False, "login_ok": False, "reason": "probe_failed"}
-        return dict(result) if isinstance(result, dict) else {}
+        return login_state_from_probe(normalize_dom_probe_payload(result))
 
     async def _assistant_messages(self, tab: Any) -> list[str]:
         result = await evaluate_script(tab, ASSISTANT_MESSAGE_QUERY)

@@ -2,7 +2,7 @@ from astra_nexus.config.settings import Settings
 
 
 def test_keep_browser_open_on_error_setting_defaults_to_false() -> None:
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.nodriver_keep_browser_open_on_error is False
 

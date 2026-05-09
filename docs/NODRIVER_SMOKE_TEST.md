@@ -30,9 +30,13 @@ astra-nexus-nodriver-login
 ```
 
 Команда откроет ровно один Chrome с `NODRIVER_USER_DATA_DIR`. Войди в ChatGPT вручную.
-После входа нажми Enter в терминале. Сессия останется в browser profile.
+Когда увидишь поле ввода ChatGPT, нажми Enter в терминале. Login helper выполнит
+DOM probe и напишет `status: ok` только если поле ввода найдено. Если видны кнопки
+login/sign up, он вернёт `status: login_required`; если страница открылась, но поле
+ввода не найдено, он вернёт `status: chatgpt_ui_not_ready`.
 
-Не используй `Ctrl+C` как обычный способ завершения login helper.
+Если всё же нажать `Ctrl+C`, команда закрывает браузер, освобождает lock и печатает
+`Остановлено пользователем.` без большого traceback.
 
 ## Smoke
 
@@ -44,7 +48,9 @@ astra-nexus-nodriver-smoke
 
 - берёт lifecycle lock;
 - открывает ChatGPT;
-- проверяет, что не требуется login;
+- сначала выполняет DOM probe;
+- если `login_state: login_required`, сразу просит выполнить login и не ищет поле ввода;
+- если `chatgpt_ui_not_ready`, печатает DOM summary и путь к `dom_probe.json`;
 - отправляет prompt `Ответь одним предложением: Astra Nexus online.`;
 - печатает ответ;
 - закрывает браузер и освобождает lock.
@@ -90,7 +96,12 @@ data/debug/nodriver/dom_probe.json
 ```
 
 В выводе будут `current_url`, `page_title`, `ready_state`, `textarea_count`,
-`contenteditable_count`, `textbox_count`, `candidate_count` и видимые candidates.
+`contenteditable_count`, `textbox_count`, `login_buttons_count`, `candidate_count`,
+`login_state` и candidates.
+
+Если `dom-probe` показывает `login_required`, запусти `astra-nexus-nodriver-login`.
+Если `candidate_count=0`, смотри `dom_probe.json`: там только безопасные метаданные
+элементов, без HTML, cookies и текста переписок.
 
 Для ручной диагностики можно временно включить:
 

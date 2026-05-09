@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
-from astra_nexus.brain.nodriver.evaluate import unwrap_evaluate_result
+from astra_nexus.brain.nodriver.evaluate import evaluate_value
 from astra_nexus.brain.nodriver.exceptions import (
     NoDriverLoginRequiredError,
     NoDriverProviderError,
@@ -84,7 +84,7 @@ async def check_nodriver_deep_health(settings: Settings) -> BrainHealth:
     session = BrowserSession(settings, lifecycle_context="deep_health")
     try:
         tab = await session.open_chatgpt()
-        if bool(unwrap_evaluate_result(await tab.evaluate(LOGIN_REQUIRED_QUERY))):
+        if bool(await evaluate_value(tab, LOGIN_REQUIRED_QUERY)):
             raise NoDriverLoginRequiredError()
         return BrainHealth(
             status="ok",
