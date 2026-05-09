@@ -124,6 +124,45 @@ def test_dom_probe_plain_object_does_not_turn_counts_into_none() -> None:
     assert payload["login_state"] == "logged_in"
 
 
+def test_dom_probe_deep_serialized_pairs_do_not_turn_counts_into_none() -> None:
+    payload = normalize_dom_probe_payload(
+        [
+            ["href", "https://chatgpt.com/"],
+            ["title", "ChatGPT"],
+            ["readyState", "complete"],
+            ["bodyTextSample", "ChatGPT Message ChatGPT"],
+            ["textareaCount", 1],
+            ["contenteditableCount", 1],
+            ["textboxCount", 1],
+            ["loginButtonCount", 0],
+            ["candidate_count", 1],
+            ["composerFound", True],
+            ["loginState", "logged_in"],
+            [
+                "candidates",
+                [
+                    [
+                        ["selectorHint", "#prompt-textarea"],
+                        ["tagName", "div"],
+                        ["isVisible", True],
+                    ]
+                ],
+            ],
+        ]
+    )
+
+    assert payload["ready_state"] == "complete"
+    assert payload["href"] == "https://chatgpt.com/"
+    assert payload["body_text_sample"] == "ChatGPT Message ChatGPT"
+    assert payload["textarea_count"] == 1
+    assert payload["contenteditable_count"] == 1
+    assert payload["textbox_count"] == 1
+    assert payload["login_buttons_count"] == 0
+    assert payload["candidate_count"] == 1
+    assert payload["login_state"] == "logged_in"
+    assert payload["candidates"][0]["selector"] == "#prompt-textarea"
+
+
 def test_dom_probe_run_stops_session_when_probe_raises(monkeypatch, tmp_path, capsys) -> None:
     stopped = False
 
@@ -156,6 +195,55 @@ def test_dom_probe_run_stops_session_when_probe_raises(monkeypatch, tmp_path, ca
     assert exit_code == 1
     assert stopped is True
     assert "status: dom_probe_failed" in output
+
+
+def test_collect_dom_probe_marks_evaluate_failed_for_none_probe_result(tmp_path) -> None:
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_page_load_timeout_seconds=0.01,
+    )
+
+    class FakeTab:
+        url = "https://chatgpt.com/"
+        title = "ChatGPT"
+
+        async def evaluate(
+            self,
+            script: str,
+            *,
+            await_promise: bool = False,
+            return_by_value: bool = False,
+        ):
+            if "PROMPT_CANDIDATE_PROBE" in script:
+                return None
+            if "document.readyState" in script:
+                return "complete"
+            if "window.location.href" in script:
+                return self.url
+            if "document.title" in script:
+                return self.title
+            return None
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.settings = settings
+
+        async def ensure_chatgpt_page(self):
+            return FakeTab()
+
+        async def current_url(self):
+            return "https://chatgpt.com/"
+
+        async def current_title(self):
+            return "ChatGPT"
+
+    payload = asyncio.run(dom_probe.collect_dom_probe(FakeSession()))
+
+    assert payload["status"] == "evaluate_failed"
+    assert payload["ready_state"] is None
+    assert payload["raw_evaluate_result_type"] == "NoneType"
+    assert payload["current_url"] == "https://chatgpt.com/"
 
 
 def test_dom_probe_cancelled_error_returns_without_traceback(monkeypatch, tmp_path, capsys) -> None:

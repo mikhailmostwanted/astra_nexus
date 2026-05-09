@@ -7,6 +7,7 @@ from astra_nexus.brain.nodriver.browser_session import BrowserSession
 from astra_nexus.brain.nodriver.dom_probe import (
     collect_dom_probe,
     is_chatgpt_composer_ready,
+    is_evaluate_failed,
     is_login_required,
     write_dom_probe_report,
 )
@@ -39,6 +40,18 @@ async def amain() -> int:
         print(f"candidate_count: {payload.get('candidate_count')}")
         print(f"login_state: {payload.get('login_state')}")
         print(f"dom_probe: {report_path}")
+        if is_evaluate_failed(payload):
+            print("status: evaluate_failed")
+            print("message: DOM probe не смог прочитать результат JavaScript")
+            exception = payload.get("exception") or {}
+            if isinstance(exception, dict):
+                print(f"exception_type: {exception.get('type')}")
+            if settings.nodriver_keep_browser_open_on_error:
+                await asyncio.to_thread(
+                    input,
+                    "Браузер оставлен открытым. Проверь страницу и нажми Enter для закрытия.",
+                )
+            return 1
         if is_chatgpt_composer_ready(payload):
             print("status: ok")
             print("message: browser profile сохранён, поле ввода ChatGPT найдено")

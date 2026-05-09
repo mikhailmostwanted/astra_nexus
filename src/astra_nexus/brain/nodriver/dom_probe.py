@@ -3,11 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
-from astra_nexus.brain.nodriver.evaluate import evaluate_value, unwrap_remote_value
+from astra_nexus.brain.nodriver.evaluate import (
+    evaluate_value,
+    evaluate_with_diagnostics,
+    unwrap_remote_value,
+)
 from astra_nexus.brain.nodriver.exceptions import NoDriverPageLoadError, NoDriverProviderError
 from astra_nexus.brain.nodriver.selectors import PROMPT_INPUT_SELECTORS
 from astra_nexus.config.settings import Settings, load_settings
@@ -72,8 +77,11 @@ def normalize_dom_probe_payload(summary: Any) -> dict[str, Any]:
         _first_present(payload, "visible_candidates", "visibleCandidates")
     )
     payload["current_url"] = _first_present(payload, "current_url", "url")
+    payload["href"] = _first_present(payload, "href", "current_url", "url")
     payload["page_title"] = _first_present(payload, "page_title", "title")
+    payload["title"] = payload["page_title"]
     payload["ready_state"] = _first_present(payload, "ready_state", "readyState")
+    payload["body_text_sample"] = _first_present(payload, "body_text_sample", "bodyTextSample")
     payload["textarea_count"] = _first_present(payload, "textarea_count", "textareaCount")
     payload["contenteditable_count"] = _first_present(
         payload,
@@ -118,12 +126,18 @@ def _first_present(payload: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+def is_evaluate_failed(payload: dict[str, Any]) -> bool:
+    return payload.get("status") == "evaluate_failed"
+
+
 def is_chatgpt_composer_ready(payload: dict[str, Any]) -> bool:
-    return bool(payload.get("composer_found") or payload.get("marked_selector"))
+    return not is_evaluate_failed(payload) and bool(
+        payload.get("composer_found") or payload.get("marked_selector")
+    )
 
 
 def is_login_required(payload: dict[str, Any]) -> bool:
-    return (
+    return not is_evaluate_failed(payload) and (
         payload.get("login_state") == "login_required"
         or int(payload.get("login_button_count") or 0) > 0
     )
@@ -266,6 +280,16 @@ def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> s
     return visibleInfo(node).isVisible;
   }}
 
+  function safeTextSample() {{
+    const text = (document.body ? document.body.innerText || '' : '')
+      .replace(/\\s+/g, ' ')
+      .slice(0, 1200);
+    return text
+      .replace(/sk-[A-Za-z0-9_-]{{12,}}/g, '[redacted-openai-key]')
+      .replace(/Bearer\\s+[A-Za-z0-9._-]+/gi, 'Bearer [redacted]')
+      .replace(/[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+/g, '[redacted-jwt]');
+  }}
+
   const loginButtons = Array.from(
     document.querySelectorAll('a, button, input, [role="button"]')
   ).filter((node) => isVisible(node) && loginWords.test(labelFor(node)));
@@ -294,8 +318,10 @@ def build_prompt_candidate_probe_script(selectors: list[str] | None = None) -> s
 
   return {{
     url: window.location.href,
+    href: window.location.href,
     title: document.title || '',
     readyState: document.readyState,
+    bodyTextSample: safeTextSample(),
     textareaCount: document.querySelectorAll('textarea').length,
     contenteditableCount: document.querySelectorAll('[contenteditable="true"]').length,
     textboxCount: document.querySelectorAll('[role="textbox"]').length,
@@ -363,10 +389,23 @@ async def collect_dom_probe(session: BrowserSession) -> dict[str, Any]:
     )
     await asyncio.sleep(POST_READY_PROBE_DELAY_SECONDS)
     logger.info("dom.probe.started", extra={"stage": "dom.probe.started"})
-    summary = await evaluate_script(tab, build_prompt_candidate_probe_script())
-    payload = normalize_dom_probe_payload(summary)
-    payload["current_url"] = await session.current_url()
-    payload["page_title"] = await session.current_title()
+    diagnostics = await evaluate_with_diagnostics(tab, build_prompt_candidate_probe_script())
+    normalized_result = diagnostics.get("value")
+    payload = normalize_dom_probe_payload(normalized_result)
+    current_url = await session.current_url()
+    page_title = await session.current_title()
+    payload["current_url"] = payload.get("current_url") or current_url
+    payload["href"] = payload.get("href") or payload.get("current_url")
+    payload["page_title"] = payload.get("page_title") or page_title
+    payload["title"] = payload.get("title") or payload.get("page_title")
+    payload["timestamp"] = datetime.now(UTC).isoformat()
+    payload["stage"] = "dom.probe.evaluate"
+    payload["raw_evaluate_result_type"] = diagnostics.get("raw_result_type")
+    payload["raw_evaluate_result_repr"] = diagnostics.get("raw_result_repr")
+    payload["evaluate_method"] = diagnostics.get("method")
+    payload["normalized_result"] = normalized_result
+    payload["exception"] = diagnostics.get("exception")
+    payload["status"] = _dom_probe_status(payload, diagnostics)
     logger.info(
         "dom.probe.finished",
         extra={
@@ -375,6 +414,16 @@ async def collect_dom_probe(session: BrowserSession) -> dict[str, Any]:
         },
     )
     return payload
+
+
+def _dom_probe_status(payload: dict[str, Any], diagnostics: dict[str, Any]) -> str:
+    if diagnostics.get("exception") is not None:
+        return "evaluate_failed"
+    if not isinstance(diagnostics.get("value"), dict):
+        return "evaluate_failed"
+    if payload.get("ready_state") is None:
+        return "evaluate_failed"
+    return "ok"
 
 
 def write_dom_probe_report(settings: Settings, payload: dict[str, Any]) -> Path:
@@ -433,6 +482,8 @@ async def run() -> int:
         return 1
 
     print("Astra Nexus NoDriver DOM probe")
+    print(f"status: {payload.get('status')}")
+    print(f"stage: {payload.get('stage')}")
     print(f"current_url: {payload.get('current_url')}")
     print(f"page_title: {payload.get('page_title')}")
     print(f"ready_state: {payload.get('ready_state')}")
@@ -442,6 +493,10 @@ async def run() -> int:
     print(f"login_buttons_count: {payload.get('login_buttons_count')}")
     print(f"candidate_count: {payload.get('candidate_count')}")
     print(f"login_state: {payload.get('login_state')}")
+    if is_evaluate_failed(payload):
+        exception = payload.get("exception") or {}
+        print(f"exception_type: {exception.get('type') if isinstance(exception, dict) else None}")
+        print(f"raw_result_type: {payload.get('raw_evaluate_result_type')}")
     for candidate in normalize_candidates(payload.get("candidates", [])):
         print(
             "candidate: "
@@ -454,7 +509,7 @@ async def run() -> int:
             f"raw={candidate.get('raw')}"
         )
     print(f"report: {report_path}")
-    return 0
+    return 1 if is_evaluate_failed(payload) else 0
 
 
 def main() -> None:

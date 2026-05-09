@@ -58,6 +58,28 @@ def test_unwrap_remote_value_recurses_through_lists_and_dicts() -> None:
     assert unwrap_remote_value(payload) == {"ready_state": "complete", "counts": [3]}
 
 
+def test_unwrap_remote_value_converts_deep_serialized_object_pairs() -> None:
+    payload = [
+        ["readyState", "complete"],
+        ["textareaCount", 1],
+        [
+            "candidates",
+            [
+                [
+                    ["selectorHint", "#prompt-textarea"],
+                    ["isVisible", True],
+                ]
+            ],
+        ],
+    ]
+
+    assert unwrap_remote_value(payload) == {
+        "readyState": "complete",
+        "textareaCount": 1,
+        "candidates": [{"selectorHint": "#prompt-textarea", "isVisible": True}],
+    }
+
+
 def test_unwrap_evaluate_result_handles_cdp_result_wrapper() -> None:
     result = {"result": {"type": "string", "value": "complete"}}
 
@@ -85,3 +107,19 @@ def test_evaluate_value_unwraps_number_remote_object() -> None:
 
 def test_unwrap_remote_value_preserves_falsy_remote_object_value() -> None:
     assert unwrap_remote_value(RemoteObjectLike(0)) == 0
+
+
+def test_unwrap_remote_value_preserves_falsy_values() -> None:
+    payload = [
+        ["zero", 0],
+        ["falseValue", False],
+        ["emptyString", ""],
+        ["emptyList", []],
+    ]
+
+    assert unwrap_remote_value(payload) == {
+        "zero": 0,
+        "falseValue": False,
+        "emptyString": "",
+        "emptyList": [],
+    }

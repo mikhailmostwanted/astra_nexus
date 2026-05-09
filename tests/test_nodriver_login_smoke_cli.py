@@ -97,6 +97,44 @@ def test_smoke_does_not_search_prompt_box_when_login_required(
     assert "candidate_count: 0" in output
 
 
+def test_smoke_does_not_ask_when_dom_probe_evaluate_failed(monkeypatch, tmp_path, capsys) -> None:
+    class FailingClient:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        async def ask(self, _prompt: str) -> str:
+            raise AssertionError("smoke не должен отправлять prompt после evaluate_failed")
+
+    async def fake_collect(_session) -> dict:
+        return {
+            "status": "evaluate_failed",
+            "stage": "dom.probe.evaluate",
+            "current_url": "https://chatgpt.com/",
+            "page_title": "ChatGPT",
+            "ready_state": None,
+            "textarea_count": None,
+            "contenteditable_count": None,
+            "textbox_count": None,
+            "login_buttons_count": None,
+            "candidate_count": 0,
+            "composer_found": False,
+            "login_state": "unknown",
+            "exception": {"type": "RuntimeError", "message": "broken evaluate"},
+        }
+
+    monkeypatch.setattr(smoke, "load_settings", lambda: make_settings(tmp_path))
+    monkeypatch.setattr(smoke, "BrowserSession", FakeSession)
+    monkeypatch.setattr(smoke, "ChatGPTClient", FailingClient)
+    monkeypatch.setattr(smoke, "collect_dom_probe", fake_collect)
+
+    exit_code = asyncio.run(smoke.amain())
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "status: evaluate_failed" in output
+    assert "exception_type: RuntimeError" in output
+
+
 def test_smoke_cancelled_error_returns_without_traceback(monkeypatch, tmp_path, capsys) -> None:
     async def cancelled_collect(_session) -> dict:
         raise asyncio.CancelledError

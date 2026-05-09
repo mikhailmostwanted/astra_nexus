@@ -103,6 +103,11 @@ data/debug/nodriver/dom_probe.json
 Если `candidate_count=0`, смотри `dom_probe.json`: там только безопасные метаданные
 элементов, без HTML, cookies и текста переписок.
 
+Если `dom-probe` показывает `status: evaluate_failed`, smoke не продолжает поиск
+prompt box и не отправляет prompt. Сначала проверь в `dom_probe.json` поля
+`raw_evaluate_result_type`, `raw_evaluate_result_repr`, `normalized_result` и
+`exception`.
+
 Для ручной диагностики можно временно включить:
 
 ```env

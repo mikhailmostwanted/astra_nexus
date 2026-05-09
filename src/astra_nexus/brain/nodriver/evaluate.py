@@ -4,8 +4,22 @@ from typing import Any
 
 
 async def evaluate_value(tab: Any, expression: str, await_promise: bool = False) -> Any:
+    diagnostics = await evaluate_with_diagnostics(tab, expression, await_promise=await_promise)
+    if diagnostics.get("exception") is not None:
+        raise RuntimeError(f"JavaScript evaluate failed: {diagnostics['exception']}")
+    return diagnostics["value"]
+
+
+async def evaluate_with_diagnostics(
+    tab: Any,
+    expression: str,
+    await_promise: bool = False,
+) -> dict[str, Any]:
+    raw_result: Any = None
+    exception: dict[str, str] | None = None
+    method = "tab.evaluate"
     try:
-        result = await tab.evaluate(
+        raw_result = await tab.evaluate(
             expression,
             await_promise=await_promise,
             return_by_value=True,
@@ -13,13 +27,37 @@ async def evaluate_value(tab: Any, expression: str, await_promise: bool = False)
     except TypeError as exc:
         message = str(exc)
         if "return_by_value" not in message and "await_promise" not in message:
-            raise
-        result = await tab.evaluate(expression)
+            exception = _exception_payload(exc)
+        else:
+            try:
+                raw_result = await tab.evaluate(expression)
+            except Exception as fallback_exc:
+                exception = _exception_payload(fallback_exc)
+    except Exception as exc:
+        exception = _exception_payload(exc)
 
-    error = _extract_evaluate_error(result)
+    error = _extract_evaluate_error(raw_result)
     if error is not None:
-        raise RuntimeError(f"JavaScript evaluate failed: {error}")
-    return unwrap_remote_value(result)
+        exception = {
+            "type": type(error).__name__,
+            "message": _stringify_error(error),
+        }
+
+    value = None if exception else unwrap_remote_value(raw_result)
+    if value is None and exception is None and hasattr(tab, "send"):
+        fallback = await _evaluate_via_cdp(tab, expression, await_promise=await_promise)
+        method = fallback["method"]
+        raw_result = fallback["raw_result"]
+        exception = fallback["exception"]
+        value = None if exception else unwrap_remote_value(raw_result)
+
+    return {
+        "value": value,
+        "method": method,
+        "raw_result_type": type(raw_result).__name__,
+        "raw_result_repr": _safe_repr(raw_result),
+        "exception": exception,
+    }
 
 
 def unwrap_remote_value(value: Any) -> Any:
@@ -32,6 +70,12 @@ def unwrap_remote_value(value: Any) -> Any:
             return {"error": _stringify_error(error)}
         return unwrap_remote_value(remote_object)
     if isinstance(value, list):
+        if _looks_like_key_value_pairs(value):
+            return {
+                str(item[0]): unwrap_remote_value(item[1])
+                for item in value
+                if isinstance(item, (list, tuple)) and len(item) == 2
+            }
         return [unwrap_remote_value(item) for item in value]
     if isinstance(value, dict):
         error = _extract_evaluate_error(value)
@@ -134,3 +178,65 @@ def _stringify_error(error: Any) -> str:
     if isinstance(error, dict):
         return str(error.get("text") or error.get("description") or error)
     return str(error)
+
+
+def _looks_like_key_value_pairs(value: list[Any]) -> bool:
+    if not value:
+        return False
+    return all(
+        isinstance(item, (list, tuple)) and len(item) == 2 and isinstance(item[0], str)
+        for item in value
+    )
+
+
+async def _evaluate_via_cdp(
+    tab: Any,
+    expression: str,
+    *,
+    await_promise: bool,
+) -> dict[str, Any]:
+    try:
+        from nodriver import cdp
+
+        raw_result = await tab.send(
+            cdp.runtime.evaluate(
+                expression=expression,
+                user_gesture=True,
+                await_promise=await_promise,
+                return_by_value=True,
+                allow_unsafe_eval_blocked_by_csp=True,
+            )
+        )
+    except Exception as exc:
+        return {
+            "method": "cdp.runtime.evaluate",
+            "raw_result": None,
+            "exception": _exception_payload(exc),
+        }
+    error = _extract_evaluate_error(raw_result)
+    return {
+        "method": "cdp.runtime.evaluate",
+        "raw_result": raw_result,
+        "exception": (
+            {
+                "type": type(error).__name__,
+                "message": _stringify_error(error),
+            }
+            if error is not None
+            else None
+        ),
+    }
+
+
+def _exception_payload(exc: Exception) -> dict[str, str]:
+    return {
+        "type": type(exc).__name__,
+        "message": str(exc),
+    }
+
+
+def _safe_repr(value: Any, *, limit: int = 8000) -> str:
+    text = repr(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "...<truncated>"

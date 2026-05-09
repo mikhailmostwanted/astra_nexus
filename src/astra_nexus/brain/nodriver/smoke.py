@@ -8,6 +8,7 @@ from astra_nexus.brain.nodriver.chatgpt_client import ChatGPTClient
 from astra_nexus.brain.nodriver.dom_probe import (
     collect_dom_probe,
     is_chatgpt_composer_ready,
+    is_evaluate_failed,
     is_login_required,
     write_dom_probe_report,
 )
@@ -46,6 +47,14 @@ async def amain() -> int:
         print(f"candidate_count: {report_payload.get('candidate_count')}")
         print(f"login_state: {report_payload.get('login_state')}")
         print(f"dom_probe: {report_path}")
+        if is_evaluate_failed(report_payload):
+            print("status: evaluate_failed")
+            print("stage: dom.probe.evaluate")
+            print("message: DOM probe не смог прочитать результат JavaScript")
+            exception = report_payload.get("exception") or {}
+            if isinstance(exception, dict):
+                print(f"exception_type: {exception.get('type')}")
+            return 1
         if is_login_required(report_payload):
             raise NoDriverLoginRequiredError(
                 "Нужен вход в ChatGPT.",

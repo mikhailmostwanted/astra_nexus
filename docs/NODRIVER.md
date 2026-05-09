@@ -176,6 +176,11 @@ astra-nexus-nodriver-dom-probe
 data/debug/nodriver/dom_probe.json
 ```
 
+В `dom_probe.json` также сохраняются `raw_evaluate_result_type`,
+`raw_evaluate_result_repr`, `normalized_result`, `timestamp` и `exception`. Если
+слой JavaScript evaluate сломан, команда возвращает `status: evaluate_failed`; в этом
+случае не нужно обновлять selectors, сначала смотри raw/normalized результат в отчёте.
+
 Если `login_state: login_required`, выполни `astra-nexus-nodriver-login` и войди
 заново. Если `candidate_count: 0` при `login_state: chatgpt_ui_not_ready`, открой
 `dom_probe.json` и проверь, какие безопасные признаки страницы увидел probe.
