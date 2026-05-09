@@ -48,6 +48,20 @@ def render_task_status(
     ]
     if workspace_path is not None:
         lines.append(f"Workspace: {workspace_path}")
+    if task.state == "failed":
+        error_message = _latest_error_message(recent_messages or [])
+        if error_message is not None:
+            metadata = error_message.metadata_json or {}
+            lines.append("")
+            lines.append(f"failed stage: {metadata.get('stage', 'unknown')}")
+            lines.append(f"failed agent: {error_message.agent_id}")
+            lines.append(
+                f"error_code: {metadata.get('error_code', metadata.get('status', 'failed'))}"
+            )
+            lines.append(f"error_message: {error_message.content}")
+            debug_report_path = metadata.get("debug_report_path")
+            if debug_report_path:
+                lines.append(f"debug report: {debug_report_path}")
     if recent_messages:
         lines.append("")
         lines.append("Последние сообщения:")
@@ -81,26 +95,61 @@ def render_task_event(event: TaskEvent) -> str | None:
             f"Артефакт: {event.payload.get('artifact_path', '')}"
         )
     if event.type == "task.failed":
-        status = str(event.payload.get("status", "failed"))
+        status = str(event.payload.get("error_code", event.payload.get("status", "failed")))
         message = str(event.payload.get("message", "задача завершилась с ошибкой"))
         action = str(event.payload.get("action", "проверь server logs"))
-        if status in {
-            "browser_connect_failed",
-            "chrome_start_timeout",
-            "login_required",
-            "profile_locked",
-            "timeout",
-            "selector_not_found",
-            "unavailable",
-        }:
-            return (
-                "Astra Nexus\n"
-                "Провайдер мозга недоступен\n"
-                f"Задача: {event.task_id}\n"
-                f"Причина: {message}\n"
-                f"Что сделать: {action}"
-            )
-        return f"Astra Nexus\nЗадача завершилась с ошибкой: {event.task_id}\nПричина: {message}"
+        stage = str(event.payload.get("stage", "unknown"))
+        agent_id = str(event.payload.get("agent_id", "unknown"))
+        provider = str(event.payload.get("provider", "unknown"))
+        debug_report_path = event.payload.get("debug_report_path")
+        if (
+            status
+            in {
+                "browser_connect_failed",
+                "chrome_start_timeout",
+                "login_required",
+                "prompt_box_not_found",
+                "profile_locked",
+                "response_timeout",
+                "timeout",
+                "selector_not_found",
+                "unavailable",
+            }
+            or "error_code" in event.payload
+        ):
+            lines = [
+                "Astra Nexus",
+                "Задача завершилась с ошибкой",
+                "",
+                f"task_id: {event.task_id}",
+                f"stage: {stage}",
+                f"agent: {agent_id}",
+                f"provider: {provider}",
+                f"error_code: {status}",
+                f"message: {message}",
+            ]
+            if debug_report_path:
+                lines.append(f"debug: {debug_report_path}")
+            lines.append(f"Что сделать: {action}")
+            return "\n".join(lines)
+        return (
+            "Astra Nexus\n"
+            "Задача завершилась с ошибкой\n\n"
+            f"task_id: {event.task_id}\n"
+            f"stage: {stage}\n"
+            f"agent: {agent_id}\n"
+            f"provider: {provider}\n"
+            f"error_code: {status}\n"
+            f"message: {message}"
+        )
     if event.type == "task.cancelled":
         return f"Astra Nexus\nЗадача отменена: {event.task_id}"
+    return None
+
+
+def _latest_error_message(messages: list[AgentMessage]) -> AgentMessage | None:
+    for message in reversed(messages):
+        metadata = message.metadata_json or {}
+        if message.role == "error" or metadata.get("error_code") or metadata.get("status"):
+            return message
     return None

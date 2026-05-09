@@ -49,7 +49,13 @@ astra-nexus-nodriver-login
 astra-nexus-nodriver-smoke
 ```
 
-7. Только после успешного smoke запускай API или Telegram bot.
+7. Проверь один произвольный prompt без Telegram:
+
+```bash
+astra-nexus-nodriver-ask "Ответь одним предложением: Astra Nexus online."
+```
+
+8. Только после успешных smoke и ask запускай API или Telegram bot.
 
 ## Lifecycle и lock
 
@@ -76,6 +82,7 @@ Astra Nexus использует один browser profile:
 
 - `astra-nexus-nodriver-login`;
 - `astra-nexus-nodriver-smoke`;
+- `astra-nexus-nodriver-ask`;
 - API deep health;
 - Telegram/API flow с `BRAIN_PROVIDER=nodriver`.
 
@@ -131,14 +138,51 @@ curl http://127.0.0.1:8000/api/brain/health/deep
 Используй deep health только когда не запущены login/smoke/API-provider с тем же
 профилем.
 
+## Ручная проверка brain без Telegram
+
+```bash
+astra-nexus-nodriver-ask "Объясни в 5 предложениях, что такое Astra Nexus"
+```
+
+Команда использует тот же `NoDriverProvider`, но не запускает orchestrator и Telegram.
+Если ошибка в NoDriver, вывод будет коротким:
+
+```text
+status: prompt_box_not_found
+stage: chatgpt.prompt_box.search.started
+message: Поле ввода ChatGPT не найдено.
+action: ...
+```
+
+Это основной способ отделить проблему ChatGPT Web bridge от Telegram task flow.
+
+## Как дебажить Telegram /task + NoDriver
+
+1. Закрой лишние Chrome/Chromium окна.
+2. Выполни `astra-nexus-nodriver-clean`.
+3. Выполни `astra-nexus-nodriver-login`, войди в ChatGPT и нажми Enter.
+4. Выполни `astra-nexus-nodriver-smoke`.
+5. Выполни `astra-nexus-nodriver-ask "Ответь одним предложением: Astra Nexus online."`.
+6. Запусти `astra-nexus-bot`.
+7. Отправь `/task ...` в Telegram.
+8. Если задача упала, посмотри `data/workspaces/{task_id}/debug/nodriver_error.json`.
+
+Telegram показывает `task_id`, `stage`, `agent`, `provider`, `error_code` и
+человеческое сообщение. Traceback остаётся только в server logs.
+
+NoDriver не перезагружает ChatGPT перед каждым агентом, если текущая вкладка уже на
+`chatgpt.com`. Новая загрузка выполняется только для пустой вкладки, другого домена или
+явного reload.
+
 ## Статусы ошибок
 
 - `profile_locked` - профиль занят живым процессом.
 - `browser_connect_failed` - NoDriver не смог подключиться к Chrome.
 - `chrome_start_timeout` - Chrome не поднялся за `NODRIVER_START_TIMEOUT_SECONDS`.
 - `login_required` - нужно вручную войти через `astra-nexus-nodriver-login`.
+- `prompt_box_not_found` - поле ввода ChatGPT не найдено на текущей странице.
 - `stale_lock_cleaned` - безопасная очистка удалила устаревший lock.
-- `timeout` - ChatGPT Web не ответил за заданное время.
+- `response_timeout` - ChatGPT Web не ответил за заданное время.
 - `selector_not_found` - UI ChatGPT изменился, нужно обновить selectors.
 
 ## Что нельзя коммитить

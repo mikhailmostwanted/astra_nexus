@@ -55,6 +55,24 @@ status: ok
 result: ...
 ```
 
+## Manual ask
+
+После smoke проверь реальный prompt без Telegram:
+
+```bash
+astra-nexus-nodriver-ask "Ответь одним предложением: Astra Nexus online."
+```
+
+Успешный вывод содержит:
+
+```text
+status: ok
+response: ...
+```
+
+При ошибке команда печатает `status`, `stage`, `message`, `url`, `selector` и `action`.
+Это помогает понять, проблема в NoDriver/ChatGPT или уже в Telegram task flow.
+
 ## Если профиль занят
 
 Ошибка `profile_locked` означает, что тот же profile уже использует живой процесс.
@@ -62,7 +80,7 @@ result: ...
 Что делать:
 
 1. Закрой предыдущий `astra-nexus-nodriver-login`, `astra-nexus-nodriver-smoke`,
-   API deep health или Telegram/API provider.
+   `astra-nexus-nodriver-ask`, API deep health или Telegram/API provider.
 2. Если процесс завис, заверши PID из сообщения.
 3. Выполни:
 
@@ -74,5 +92,11 @@ astra-nexus-nodriver-clean
 
 ## Когда запускать API или bot
 
-Запускай `astra-nexus-api` или `astra-nexus-bot` только после успешного smoke. Не
-запускай smoke и API/bot одновременно с одним `NODRIVER_USER_DATA_DIR`.
+Запускай `astra-nexus-api` или `astra-nexus-bot` только после успешных smoke и manual
+ask. Не запускай smoke/ask и API/bot одновременно с одним `NODRIVER_USER_DATA_DIR`.
+
+Если Telegram `/task` упал, ошибка будет в сообщении Telegram и в:
+
+```text
+data/workspaces/{task_id}/debug/nodriver_error.json
+```

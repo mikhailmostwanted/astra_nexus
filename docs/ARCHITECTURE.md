@@ -68,6 +68,7 @@ Telegram layer передаёт callback/event sink, форматирует со
 prompt в ChatGPT Web через локальную браузерную сессию. Это bridge, а не ядро системы:
 orchestrator, агенты, Telegram и DB не знают деталей браузерной автоматизации.
 
-Ошибки browser bridge преобразуются в доменные статусы `login_required`, `timeout`,
-`selector_not_found`, `unavailable`; Telegram показывает короткое действие вместо
+Ошибки browser bridge преобразуются в доменные статусы `login_required`,
+`prompt_box_not_found`, `response_timeout`, `profile_locked`, `selector_not_found`,
+`unavailable`; Telegram показывает stage/error_code и короткое действие вместо
 traceback.

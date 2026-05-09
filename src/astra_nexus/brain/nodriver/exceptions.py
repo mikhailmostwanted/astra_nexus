@@ -8,6 +8,28 @@ class NoDriverProviderError(BrainProviderError):
     user_message = "провайдер ChatGPT Web недоступен"
     action = "проверь настройки NoDriver и состояние браузерного профиля"
 
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        action: str | None = None,
+        stage: str | None = None,
+        url: str | None = None,
+        selector: str | None = None,
+        page_title: str | None = None,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        super().__init__(message, action=action)
+        self.stage = stage
+        self.url = url
+        self.selector = selector
+        self.page_title = page_title
+        self.details = details or {}
+
+    @property
+    def error_code(self) -> str:
+        return self.status
+
 
 class NoDriverDependencyError(NoDriverProviderError):
     status = "unavailable"
@@ -37,6 +59,7 @@ class NoDriverProfileLockedError(NoDriverProviderError):
         context: str | None = None,
         user_data_dir: str | None = None,
         lock_path: str | None = None,
+        stage: str | None = None,
     ) -> None:
         details = []
         if pid is not None:
@@ -60,6 +83,7 @@ class NoDriverProfileLockedError(NoDriverProviderError):
                 if pid is not None
                 else self.action
             ),
+            stage=stage,
         )
 
 
@@ -90,7 +114,7 @@ class NoDriverLoginRequiredError(NoDriverProviderError):
 
 
 class NoDriverTimeoutError(NoDriverProviderError):
-    status = "timeout"
+    status = "response_timeout"
     user_message = "истекло время ожидания ответа ChatGPT Web"
     action = "проверь страницу ChatGPT и повторить задачу позже"
 
@@ -99,6 +123,15 @@ class NoDriverSelectorNotFoundError(NoDriverProviderError):
     status = "selector_not_found"
     user_message = "не найден ожидаемый элемент интерфейса ChatGPT"
     action = "проверь docs/NODRIVER.md и обнови селекторы под текущий UI"
+
+
+class NoDriverPromptBoxNotFoundError(NoDriverSelectorNotFoundError):
+    status = "prompt_box_not_found"
+    user_message = "поле ввода ChatGPT не найдено"
+    action = (
+        "проверь, что открыт ChatGPT после входа, затем запусти "
+        "astra-nexus-nodriver-ask для диагностики"
+    )
 
 
 class NoDriverPageLoadError(NoDriverProviderError):

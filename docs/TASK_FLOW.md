@@ -28,6 +28,14 @@
 Команда `/status <task_id>` показывает текущее состояние задачи, последние сообщения
 агентов, путь к workspace и итог, если задача уже завершена.
 
+Для `failed` задач `/status` дополнительно показывает:
+
+- failed stage;
+- failed agent;
+- error_code;
+- error_message;
+- путь к debug report, если он есть.
+
 ## Cancel
 
 Команда `/cancel <task_id>` переводит задачу в `cancelled`, если она ещё не `done`.
@@ -44,3 +52,42 @@
 - `done`
 - `failed`
 - `cancelled`
+
+## Как дебажить ошибку Telegram /task + NoDriver
+
+Если `/task ...` в Telegram падает на `BRAIN_PROVIDER=nodriver`, сначала отдели
+NoDriver от Telegram:
+
+1. Выполни `astra-nexus-nodriver-clean`.
+2. Выполни `astra-nexus-nodriver-login`, войди в ChatGPT и нажми Enter.
+3. Выполни `astra-nexus-nodriver-smoke`.
+4. Выполни:
+
+```bash
+astra-nexus-nodriver-ask "Ответь одним предложением: Astra Nexus online."
+```
+
+5. Запусти `astra-nexus-bot`.
+6. Отправь `/task ...`.
+7. Если задача упала, открой:
+
+```text
+data/workspaces/{task_id}/debug/nodriver_error.json
+```
+
+Ошибка в Telegram имеет вид:
+
+```text
+Astra Nexus
+Задача завершилась с ошибкой
+
+task_id: ...
+stage: ...
+agent: ...
+provider: nodriver
+error_code: prompt_box_not_found
+message: ...
+debug: data/workspaces/{task_id}/debug/nodriver_error.json
+```
+
+Traceback не отправляется в Telegram и остаётся только в server logs.

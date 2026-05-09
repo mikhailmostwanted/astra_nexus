@@ -44,7 +44,3 @@ class TelegramTaskRunner:
             await asyncio.to_thread(self.orchestrator.execute_task, context, notifier)
         except Exception:
             logger.exception("Ошибка выполнения Telegram-задачи %s", context.task_id)
-            await notifier.bot.send_message(
-                chat_id=notifier.chat_id,
-                text=f"Astra Nexus\nЗадача завершилась с ошибкой: {context.task_id}",
-            )

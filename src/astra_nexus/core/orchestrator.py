@@ -96,6 +96,8 @@ class TaskOrchestrator:
         previous_messages: list[dict[str, Any]] = []
         final_text = ""
         artifact_path = context.workspace_path / "artifacts" / "final.md"
+        current_agent_id: str | None = None
+        current_stage = TaskState.PLANNED.value
 
         try:
             self._set_state(context, TaskState.PLANNED, event_sink)
@@ -120,6 +122,8 @@ class TaskOrchestrator:
                 next_state = (
                     TaskState.FINALIZING if agent.agent_id == "finalizer" else TaskState.RUNNING
                 )
+                current_agent_id = agent.agent_id
+                current_stage = next_state.value
                 self._set_state(context, next_state, event_sink, agent_id=agent.agent_id)
 
                 output = agent.run(
@@ -128,6 +132,7 @@ class TaskOrchestrator:
                     context={
                         "task_id": context.task_id,
                         "run_id": context.run_id,
+                        "workspace_path": context.workspace_path,
                         "previous_messages": previous_messages,
                     },
                 )
@@ -186,7 +191,20 @@ class TaskOrchestrator:
         except Exception as exc:
             self.task_service.update_task_state(context.task_id, TaskState.FAILED)
             self.task_service.complete_run(context.run_id, TaskState.FAILED)
-            payload = self._error_payload(exc)
+            payload = self._error_payload(
+                exc,
+                stage=current_stage,
+                agent_id=current_agent_id,
+            )
+            if current_agent_id is not None:
+                self.message_service.create_message(
+                    task_id=context.task_id,
+                    run_id=context.run_id,
+                    agent_id=current_agent_id,
+                    role="error",
+                    content=payload["message"],
+                    metadata=payload,
+                )
             self._record_event(
                 TaskEvent(
                     type="task.failed",
@@ -221,15 +239,43 @@ class TaskOrchestrator:
         if event_sink is not None:
             event_sink(event)
 
-    def _error_payload(self, exc: Exception) -> dict[str, str]:
+    def _error_payload(
+        self,
+        exc: Exception,
+        *,
+        stage: str,
+        agent_id: str | None,
+    ) -> dict[str, str]:
         if isinstance(exc, BrainProviderError):
-            return {
-                "status": exc.status,
+            provider = str(
+                getattr(exc, "provider", getattr(self.brain_provider, "name", "unknown"))
+            )
+            error_code = exc.status
+            payload = {
+                "status": error_code,
+                "error_code": error_code,
                 "message": str(exc),
                 "action": exc.action,
+                "stage": str(getattr(exc, "stage", None) or stage),
+                "agent_id": agent_id or "unknown",
+                "provider": provider,
             }
+            debug_report_path = getattr(exc, "debug_report_path", None)
+            if debug_report_path:
+                payload["debug_report_path"] = str(debug_report_path)
+            url = getattr(exc, "url", None)
+            if url:
+                payload["url"] = str(url)
+            selector = getattr(exc, "selector", None)
+            if selector:
+                payload["selector"] = str(selector)
+            return payload
         return {
             "status": "failed",
+            "error_code": "failed",
             "message": "задача завершилась с ошибкой",
             "action": "проверь server logs",
+            "stage": stage,
+            "agent_id": agent_id or "unknown",
+            "provider": getattr(self.brain_provider, "name", "unknown"),
         }

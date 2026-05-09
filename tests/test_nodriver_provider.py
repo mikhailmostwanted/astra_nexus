@@ -1,4 +1,6 @@
 import asyncio
+import json
+from pathlib import Path
 
 import pytest
 
@@ -7,6 +9,7 @@ from astra_nexus.brain.nodriver.exceptions import (
     NoDriverChromeStartTimeoutError,
     NoDriverLoginRequiredError,
     NoDriverProfileLockedError,
+    NoDriverPromptBoxNotFoundError,
     NoDriverTimeoutError,
 )
 from astra_nexus.brain.nodriver_provider import NoDriverProvider
@@ -17,8 +20,22 @@ class FailingClient:
     def __init__(self, exc: Exception) -> None:
         self.exc = exc
 
-    async def ask(self, prompt: str) -> str:
+    async def ask(self, prompt: str, **_: object) -> str:
         raise self.exc
+
+
+class SlowClient:
+    def __init__(self) -> None:
+        self.active = 0
+        self.overlapped = False
+
+    async def ask(self, prompt: str, **_: object) -> str:
+        self.active += 1
+        if self.active > 1:
+            self.overlapped = True
+        await asyncio.sleep(0.05)
+        self.active -= 1
+        return "ok"
 
 
 def test_nodriver_provider_maps_login_required_error() -> None:
@@ -43,7 +60,7 @@ def test_nodriver_provider_maps_timeout_error() -> None:
     with pytest.raises(NoDriverTimeoutError) as exc:
         asyncio.run(provider.ask(agent_id="writer", prompt="Промпт"))
 
-    assert exc.value.status == "timeout"
+    assert exc.value.status == "response_timeout"
     assert "повторить" in exc.value.action.lower()
 
 
@@ -85,3 +102,63 @@ def test_nodriver_provider_maps_chrome_start_timeout_error() -> None:
 
     assert exc.value.status == "chrome_start_timeout"
     assert "90" in str(exc.value)
+
+
+def test_nodriver_provider_creates_debug_report_on_nodriver_error(tmp_path: Path) -> None:
+    workspace_path = tmp_path / "task_123"
+    provider = NoDriverProvider(
+        settings=Settings(
+            brain_provider="nodriver",
+            workspace_base_path=tmp_path,
+            nodriver_debug_screenshots=False,
+        ),
+        client=FailingClient(
+            NoDriverPromptBoxNotFoundError(
+                "Поле ввода ChatGPT не найдено.",
+                stage="chatgpt.prompt_box.search.started",
+                url="https://chatgpt.com/",
+                selector="#prompt-textarea",
+            )
+        ),
+    )
+
+    with pytest.raises(NoDriverPromptBoxNotFoundError):
+        asyncio.run(
+            provider.ask(
+                agent_id="writer",
+                prompt="Промпт",
+                context={
+                    "task_id": "task_123",
+                    "run_id": "run_456",
+                    "workspace_path": workspace_path,
+                },
+            )
+        )
+
+    report_path = workspace_path / "debug/nodriver_error.json"
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["task_id"] == "task_123"
+    assert payload["run_id"] == "run_456"
+    assert payload["agent_id"] == "writer"
+    assert payload["stage"] == "chatgpt.prompt_box.search.started"
+    assert payload["provider"] == "nodriver"
+    assert payload["error_code"] == "prompt_box_not_found"
+    assert payload["message"] == "Поле ввода ChatGPT не найдено."
+    assert payload["url"] == "https://chatgpt.com/"
+    assert payload["selector"] == "#prompt-textarea"
+    assert "screenshot_path" not in payload
+
+
+def test_nodriver_provider_serializes_parallel_ask_calls() -> None:
+    client = SlowClient()
+    provider = NoDriverProvider(settings=Settings(brain_provider="nodriver"), client=client)
+
+    async def run_two_calls() -> None:
+        await asyncio.gather(
+            provider.ask(agent_id="writer", prompt="Первый"),
+            provider.ask(agent_id="critic", prompt="Второй"),
+        )
+
+    asyncio.run(run_two_calls())
+
+    assert client.overlapped is False

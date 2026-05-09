@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from astra_nexus.brain.nodriver.exceptions import (
     NoDriverBrowserConnectError,
@@ -124,6 +125,13 @@ class BrowserSession:
         return name in inspect.signature(func).parameters
 
     async def open_chatgpt(self) -> Any:
+        return await self.ensure_chatgpt_page()
+
+    async def ensure_chatgpt_page(self, *, force_reload: bool = False) -> Any:
+        if not force_reload and self.tab is not None:
+            current_url = await self.current_url()
+            if self._is_chatgpt_url(current_url):
+                return self.tab
         return await self.open_url(self.settings.nodriver_chatgpt_url)
 
     async def open_url(self, url: str) -> Any:
@@ -138,6 +146,41 @@ class BrowserSession:
             raise NoDriverPageLoadError("Истекло время загрузки ChatGPT Web.") from exc
         except Exception as exc:
             raise NoDriverPageLoadError() from exc
+
+    async def current_url(self) -> str | None:
+        if self.tab is None:
+            return None
+        value = getattr(self.tab, "url", None)
+        if value:
+            return str(value)
+        try:
+            value = await self.tab.evaluate("window.location.href")
+        except Exception:
+            return None
+        return str(value) if value else None
+
+    async def current_title(self) -> str | None:
+        if self.tab is None:
+            return None
+        value = getattr(self.tab, "title", None)
+        if value:
+            return str(value)
+        try:
+            value = await self.tab.evaluate("document.title")
+        except Exception:
+            return None
+        return str(value) if value else None
+
+    def _is_chatgpt_url(self, url: str | None) -> bool:
+        if not url:
+            return False
+        current = urlparse(url)
+        expected = urlparse(self.settings.nodriver_chatgpt_url)
+        expected_host = expected.hostname or "chatgpt.com"
+        current_host = current.hostname or ""
+        return current.scheme in {"http", "https"} and (
+            current_host == expected_host or current_host.endswith(f".{expected_host}")
+        )
 
     async def stop(self) -> None:
         if self.browser is None:

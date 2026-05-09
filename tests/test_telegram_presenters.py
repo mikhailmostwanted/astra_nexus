@@ -117,7 +117,8 @@ def test_render_brain_provider_error_event_without_traceback() -> None:
     text = render_task_event(event)
 
     assert text is not None
-    assert "Провайдер мозга недоступен" in text
+    assert "Задача завершилась с ошибкой" in text
+    assert "error_code: login_required" in text
     assert "требуется ручной вход" in text
     assert "astra-nexus-nodriver-login" in text
     assert "Traceback" not in text
@@ -138,7 +139,71 @@ def test_render_profile_locked_event_without_traceback() -> None:
     text = render_task_event(event)
 
     assert text is not None
-    assert "Провайдер мозга недоступен" in text
+    assert "Задача завершилась с ошибкой" in text
+    assert "error_code: profile_locked" in text
     assert "Chrome profile занят" in text
     assert "astra-nexus-nodriver-clean" in text
     assert "Traceback" not in text
+
+
+def test_render_failed_task_event_includes_stage_agent_provider_and_error_code() -> None:
+    event = TaskEvent(
+        type="task.failed",
+        task_id="task_123",
+        run_id="run_456",
+        payload={
+            "status": "prompt_box_not_found",
+            "stage": "chatgpt.prompt_box.search.started",
+            "agent_id": "coordinator",
+            "provider": "nodriver",
+            "message": "Поле ввода ChatGPT не найдено.",
+            "debug_report_path": "data/workspaces/task_123/debug/nodriver_error.json",
+        },
+    )
+
+    text = render_task_event(event)
+
+    assert text is not None
+    assert "Задача завершилась с ошибкой" in text
+    assert "task_id: task_123" in text
+    assert "stage: chatgpt.prompt_box.search.started" in text
+    assert "agent: coordinator" in text
+    assert "provider: nodriver" in text
+    assert "error_code: prompt_box_not_found" in text
+    assert "Поле ввода ChatGPT не найдено." in text
+    assert "debug: data/workspaces/task_123/debug/nodriver_error.json" in text
+
+
+def test_render_status_includes_failed_error_metadata() -> None:
+    task = Task(
+        id="task_123",
+        user_id="telegram:42",
+        title="Проверка",
+        prompt="Проверить",
+        state="failed",
+    )
+    error_message = AgentMessage(
+        id="msg_error",
+        task_id="task_123",
+        run_id="run_456",
+        agent_id="coordinator",
+        role="error",
+        content="Поле ввода ChatGPT не найдено.",
+        metadata_json={
+            "stage": "chatgpt.prompt_box.search.started",
+            "error_code": "prompt_box_not_found",
+            "debug_report_path": "data/workspaces/task_123/debug/nodriver_error.json",
+        },
+    )
+
+    text = render_task_status(
+        task,
+        recent_messages=[error_message],
+        workspace_path=Path("data/workspaces/task_123"),
+    )
+
+    assert "failed stage: chatgpt.prompt_box.search.started" in text
+    assert "failed agent: coordinator" in text
+    assert "error_code: prompt_box_not_found" in text
+    assert "error_message: Поле ввода ChatGPT не найдено." in text
+    assert "debug report: data/workspaces/task_123/debug/nodriver_error.json" in text

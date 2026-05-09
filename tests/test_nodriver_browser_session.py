@@ -9,7 +9,25 @@ from astra_nexus.config.settings import Settings
 
 
 class FakeBrowser:
-    pass
+    def __init__(self) -> None:
+        self.get_calls: list[str] = []
+
+    async def get(self, url: str) -> object:
+        self.get_calls.append(url)
+        return FakeTab(url)
+
+
+class FakeTab:
+    def __init__(self, url: str, title: str = "ChatGPT") -> None:
+        self.url = url
+        self.title = title
+
+    async def evaluate(self, script: str) -> str:
+        if "window.location.href" in script:
+            return self.url
+        if "document.title" in script:
+            return self.title
+        return ""
 
 
 def test_browser_session_resolves_user_data_dir_to_absolute_path(tmp_path: Path) -> None:
@@ -67,3 +85,33 @@ def test_browser_session_maps_repeated_start_failures_to_browser_connect_failed(
     assert attempts == 2
     assert exc.value.status == "browser_connect_failed"
     assert "Failed to connect to browser" in str(exc.value)
+
+
+def test_browser_session_ensure_chatgpt_page_does_not_reload_existing_chatgpt_tab(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(nodriver_user_data_dir=tmp_path / "profile")
+    session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
+    browser = FakeBrowser()
+    session.browser = browser
+    session.tab = FakeTab("https://chatgpt.com/c/123")
+
+    tab = asyncio.run(session.ensure_chatgpt_page())
+
+    assert tab is session.tab
+    assert browser.get_calls == []
+
+
+def test_browser_session_ensure_chatgpt_page_opens_when_current_tab_is_blank(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(nodriver_user_data_dir=tmp_path / "profile")
+    session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
+    browser = FakeBrowser()
+    session.browser = browser
+    session.tab = FakeTab("about:blank")
+
+    tab = asyncio.run(session.ensure_chatgpt_page())
+
+    assert isinstance(tab, FakeTab)
+    assert browser.get_calls == [settings.nodriver_chatgpt_url]

@@ -92,10 +92,11 @@ NODRIVER_HEADLESS=false
 astra-nexus-nodriver-clean
 astra-nexus-nodriver-login
 astra-nexus-nodriver-smoke
+astra-nexus-nodriver-ask "Ответь одним предложением: Astra Nexus online."
 ```
 
 В открывшемся браузере вручную войди в ChatGPT, затем нажми Enter в терминале login
-helper. После успешного smoke можно запускать API или Telegram bot с
+helper. После успешных smoke и manual ask можно запускать API или Telegram bot с
 `BRAIN_PROVIDER=nodriver`.
 
 Логины, пароли, cookies, runtime locks и browser profile остаются только локально в
@@ -108,6 +109,9 @@ helper. После успешного smoke можно запускать API и
 astra-nexus-nodriver-clean
 astra-nexus-nodriver-diagnose
 ```
+
+Если Telegram `/task` падает на NoDriver, смотри сообщение с `stage/error_code` и файл
+`data/workspaces/{task_id}/debug/nodriver_error.json`.
 
 ## Тесты и качество
 
