@@ -13,6 +13,7 @@ run в памяти и нужен как чистый foundation для orchestr
 - `AgentTask` - работа конкретного агента внутри run.
 - `AgentResult` - текстовый результат агента.
 - `RunEvent` - событие run или агента для будущего Telegram log-чата.
+- `TeamMessage` - человекочитаемая реплика или статус для будущего UI/Telegram stream.
 
 ## Статусы и роли
 
@@ -64,7 +65,11 @@ Prompt Engine находится в `astra_nexus.team.prompting`.
 Профили агентов содержат display-поля для будущего UI/Telegram отображения:
 
 - `display_name`
+- `short_name`
 - `short_description`
+- `style_hint`
+- `main_chat_intro`
+- `responsibility_summary`
 - `personality`
 - `capabilities`
 - `default_style`
@@ -103,6 +108,42 @@ Prompt Engine находится в `astra_nexus.team.prompting`.
 
 Формат события уже содержит понятный `message` и `payload`, чтобы позже отдать эти данные
 в Telegram log-chat без изменения domain-модели.
+
+## Team Event Stream
+
+Поверх технических `RunEvent` добавлен слой `TeamMessage` из
+`astra_nexus.team.messages`. Он нужен, чтобы будущий Telegram bridge или dashboard могли
+получать не только служебные события, но и короткие человеческие сообщения команды.
+
+Основные сущности:
+
+- `TeamMessage` - одна реплика, статус или технический лог.
+- `TeamMessageType` - тип сообщения: `agent_says`, `agent_thinks`, `agent_started`,
+  `agent_finished`, `agent_retry`, `agent_failed`, `run_started`, `run_finished`,
+  `system_log`, `user_visible_status`.
+- `TeamMessageChannel` - канал назначения: `main_chat`, `log_chat`, `debug`.
+- `TeamMessageRenderer` - превращает `RunEvent` в короткие main/log сообщения.
+- `TeamMessageSink` - абстракция получателя сообщений.
+- `InMemoryTeamMessageSink`, `NullTeamMessageSink`, `CompositeTeamMessageSink` -
+  локальные sink-реализации без Telegram API.
+
+Каналы:
+
+- `main_chat` - будущая переписка "живых" агентов: короткие реплики вроде
+  "Босс, принял задачу. Сейчас разложу её на рабочий маршрут."
+- `log_chat` - технический статус: event type, retry count, error code, run id,
+  resume hint и другие детали для отдельного лог-бота.
+- `debug` - внутренний канал для будущего dev/debug вывода.
+
+Технические детали ошибок и retry не выводятся в `main_chat`. Они остаются в
+`log_chat`, чтобы пользователь видел нормальную командную работу, а отладка не терялась.
+
+Это пока внутренний stream/renderer. Telegram-супергруппа, Telegram bridge и реальные
+сообщения в API не подключены.
+
+Важно: слой event stream не решает intent/router. Сейчас CLI-команды явно запускают run.
+Чтобы обычная болтовня в Telegram не считалась задачей, позже нужен отдельный
+intent/router layer.
 
 ## Retry policy
 
@@ -205,6 +246,28 @@ workspace run и печатает:
 - `final_result`
 - `workspace_path`
 
+## CLI chat preview
+
+Псевдо-чат AI-команды без NoDriver и без Telegram можно посмотреть командой:
+
+```bash
+astra-nexus-team-chat-preview "Проверь идею AI-команды для Astra Nexus."
+```
+
+Команда использует только `FakeTeamProvider` и печатает stream сообщений:
+
+```text
+[Команда] ...
+[Артём] ...
+[Лог] ...
+```
+
+По умолчанию показываются `main_chat` и `log_chat`. Только main-chat:
+
+```bash
+astra-nexus-team-chat-preview --main-only "Проверь идею AI-команды для Astra Nexus."
+```
+
 ## CLI real team ask
 
 Реальный запуск команды через ChatGPT Web/NoDriver выполняется командой:
@@ -279,6 +342,8 @@ data/team_runs/<run_id>/
   tasks.json
   results.json
   events.json
+  messages.json
+  messages.md
   agent_results/
     coordinator.md
     analyst.md
@@ -297,6 +362,10 @@ Telegram log/chat отображению без подключения Telegram 
 
 `tasks.json`, `results.json` и `events.json` нужны для машинного восстановления failed
 run через `astra-nexus-team-resume`. Markdown-файлы остаются человекочитаемым отчётом.
+
+`messages.json` содержит machine-readable stream `TeamMessage`, а `messages.md` -
+человекочитаемый transcript `main_chat` и `log_chat`. При resume новые сообщения
+добавляются к существующей истории run.
 
 `agent_results/*.md` содержит человекочитаемый результат каждого агента: имя, роль,
 исходную задачу, статус и текст результата.

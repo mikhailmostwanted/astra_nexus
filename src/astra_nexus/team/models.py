@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from astra_nexus.utils.ids import new_id
+
+if TYPE_CHECKING:
+    from astra_nexus.team.messages import TeamMessage
 
 
 def utc_now() -> datetime:
@@ -53,7 +56,11 @@ class AgentProfile:
     display_name: str
     description: str
     system_instruction: str
+    short_name: str = ""
     short_description: str = ""
+    style_hint: str = ""
+    main_chat_intro: str = ""
+    responsibility_summary: str = ""
     personality: str = ""
     capabilities: tuple[str, ...] = ()
     default_style: str = ""
@@ -109,6 +116,7 @@ class TeamRun:
     tasks: list[AgentTask] = field(default_factory=list)
     results: list[AgentResult] = field(default_factory=list)
     events: list[RunEvent] = field(default_factory=list)
+    messages: list[TeamMessage] = field(default_factory=list)
     final_text: str | None = None
     error_message: str | None = None
     created_at: datetime = field(default_factory=utc_now)

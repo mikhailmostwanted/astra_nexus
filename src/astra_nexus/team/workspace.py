@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from astra_nexus.team.messages import TeamMessage, TeamMessageChannel, TeamMessageType
 from astra_nexus.team.models import (
     AgentResult,
     AgentRole,
@@ -31,7 +32,12 @@ class TeamRunWorkspace:
         self._write_json(run_path / "tasks.json", self._tasks_payload(run.tasks))
         self._write_json(run_path / "results.json", self._results_payload(run.results))
         self._write_json(run_path / "events.json", self._events_payload(run.events))
+        self._write_json(run_path / "messages.json", self._messages_payload(run.messages))
         self._write_events(run_path / "events.jsonl", run.events)
+        (run_path / "messages.md").write_text(
+            self._messages_markdown(run.messages),
+            encoding="utf-8",
+        )
         (run_path / "final.md").write_text(run.final_text or "", encoding="utf-8")
 
         tasks_by_role = {task.profile.role: task for task in run.tasks}
@@ -52,6 +58,11 @@ class TeamRunWorkspace:
         tasks_payload = self._read_json(run_path / "tasks.json")
         results_payload = self._read_json(run_path / "results.json")
         events_payload = self._read_json(run_path / "events.json")
+        messages_payload = (
+            self._read_json(run_path / "messages.json")
+            if (run_path / "messages.json").exists()
+            else []
+        )
         profiles = default_profiles_by_role()
 
         run = TeamRun(
@@ -102,6 +113,24 @@ class TeamRunWorkspace:
                 created_at=self._parse_datetime(event["timestamp"]),
             )
             for event in events_payload
+        ]
+        run.messages = [
+            TeamMessage(
+                id=message["message_id"],
+                run_id=run.id,
+                channel=TeamMessageChannel(message["channel"]),
+                type=TeamMessageType(message["message_type"]),
+                text=message["text"],
+                author_name=message.get("author_name"),
+                author_role=AgentRole(message["author_role"])
+                if message.get("author_role")
+                else None,
+                event_id=message.get("event_id"),
+                agent_task_id=message.get("agent_task_id"),
+                metadata=message.get("metadata", {}),
+                created_at=self._parse_datetime(message["timestamp"]),
+            )
+            for message in messages_payload
         ]
         return run
 
@@ -173,6 +202,9 @@ class TeamRunWorkspace:
     def _events_payload(self, events: list[RunEvent]) -> list[dict[str, Any]]:
         return [self._event_payload(event) for event in events]
 
+    def _messages_payload(self, messages: list[TeamMessage]) -> list[dict[str, Any]]:
+        return [self._message_payload(message) for message in messages]
+
     def _write_events(self, path: Path, events: list[RunEvent]) -> None:
         lines = [json.dumps(self._event_payload(event), ensure_ascii=False) for event in events]
         path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
@@ -188,6 +220,55 @@ class TeamRunWorkspace:
             "message": event.message,
             "details": event.payload,
         }
+
+    def _message_payload(self, message: TeamMessage) -> dict[str, Any]:
+        return {
+            "message_id": message.id,
+            "timestamp": self._serialize_datetime(message.created_at),
+            "run_id": message.run_id,
+            "channel": message.channel.value,
+            "message_type": message.type.value,
+            "author_name": message.author_name,
+            "author_role": message.author_role.value if message.author_role is not None else None,
+            "event_id": message.event_id,
+            "agent_task_id": message.agent_task_id,
+            "text": message.text,
+            "metadata": message.metadata,
+        }
+
+    def _messages_markdown(self, messages: list[TeamMessage]) -> str:
+        main_messages = [
+            message for message in messages if message.channel == TeamMessageChannel.MAIN_CHAT
+        ]
+        log_messages = [
+            message for message in messages if message.channel == TeamMessageChannel.LOG_CHAT
+        ]
+        debug_messages = [
+            message for message in messages if message.channel == TeamMessageChannel.DEBUG
+        ]
+        sections = ["# Team Messages", ""]
+        sections.extend(self._message_channel_markdown("Main Chat", main_messages))
+        sections.extend(self._message_channel_markdown("Log Chat", log_messages))
+        if debug_messages:
+            sections.extend(self._message_channel_markdown("Debug", debug_messages))
+        return "\n".join(sections).rstrip() + "\n"
+
+    def _message_channel_markdown(
+        self,
+        title: str,
+        messages: list[TeamMessage],
+    ) -> list[str]:
+        sections = [f"## {title}", ""]
+        for message in messages:
+            author = message.author_name or "Лог"
+            timestamp = self._serialize_datetime(message.created_at)
+            sections.extend(
+                [
+                    f"- `{timestamp}` [{author}] {message.text}",
+                ]
+            )
+        sections.append("")
+        return sections
 
     def _agent_result_markdown(
         self,
@@ -254,7 +335,7 @@ class TeamRunWorkspace:
             ]
         )
 
-    def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
+    def _write_json(self, path: Path, payload: Any) -> None:
         path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

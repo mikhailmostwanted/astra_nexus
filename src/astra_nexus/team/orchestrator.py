@@ -5,6 +5,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from astra_nexus.team.messages import (
+    NullTeamMessageSink,
+    TeamMessageRenderer,
+    TeamMessageSink,
+)
 from astra_nexus.team.models import (
     AgentProfile,
     AgentResult,
@@ -77,6 +82,8 @@ class AsyncTeamOrchestrator:
         workspace_path: Path | str | None = None,
         extra_instructions: Sequence[str] | None = None,
         retry_policy: TeamRetryPolicy | None = None,
+        message_sink: TeamMessageSink | None = None,
+        message_renderer: TeamMessageRenderer | None = None,
     ) -> None:
         self.provider = provider
         self.pipeline = list(pipeline or DEFAULT_AGENT_PIPELINE)
@@ -84,9 +91,11 @@ class AsyncTeamOrchestrator:
         self.workspace_path = Path(workspace_path) if workspace_path is not None else None
         self.extra_instructions = tuple(extra_instructions or ())
         self.retry_policy = retry_policy or TeamRetryPolicy()
+        self.message_sink = message_sink or NullTeamMessageSink()
         self.profiles_by_role = default_profiles_by_role()
         if profiles is not None:
             self.profiles_by_role.update({profile.role: profile for profile in profiles})
+        self.message_renderer = message_renderer or TeamMessageRenderer(self.profiles_by_role)
         self.runs: list[TeamRun] = []
 
     async def run(self, user_task: str) -> TeamRunOutcome:
@@ -354,7 +363,13 @@ class AsyncTeamOrchestrator:
             profile=agent_task.profile,
             agent_task=agent_task,
             message=f"Агент {agent_task.profile.role.value} завершился с ошибкой.",
-            payload={"status": agent_task.status.value, "error": error_message},
+            payload={
+                "status": agent_task.status.value,
+                "error": error_message,
+                "error_code": exc.error_code,
+                "error_kind": exc.error_kind.value,
+                "transient": exc.transient,
+            },
         )
         self._append_event(
             team_run,
@@ -405,16 +420,21 @@ class AsyncTeamOrchestrator:
         agent_task_id: str | None = None,
         payload: dict | None = None,
     ) -> None:
-        team_run.events.append(
-            RunEvent(
-                run_id=team_run.id,
-                type=event_type,
-                message=message,
-                agent_role=agent_role,
-                agent_task_id=agent_task_id,
-                payload=payload or {},
-            )
+        event = RunEvent(
+            run_id=team_run.id,
+            type=event_type,
+            message=message,
+            agent_role=agent_role,
+            agent_task_id=agent_task_id,
+            payload=payload or {},
         )
+        team_run.events.append(event)
+        self._emit_event_messages(team_run, event)
+
+    def _emit_event_messages(self, team_run: TeamRun, event: RunEvent) -> None:
+        for message in self.message_renderer.render_event(event):
+            team_run.messages.append(message)
+            self.message_sink.publish(message)
 
     def _role_completed(self, team_run: TeamRun, role: AgentRole) -> bool:
         return any(result.profile.role == role for result in team_run.results)
