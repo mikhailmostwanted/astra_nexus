@@ -5,6 +5,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from astra_nexus.team.attachments import (
+    attachment_from_payload,
+    attachment_payload,
+    attachments_markdown,
+    save_attachments_to_workspace,
+)
 from astra_nexus.team.messages import TeamMessage, TeamMessageChannel, TeamMessageType
 from astra_nexus.team.models import (
     AgentResult,
@@ -27,8 +33,10 @@ class TeamRunWorkspace:
         run_path = self.root_path / run.id
         agent_results_path = run_path / "agent_results"
         agent_results_path.mkdir(parents=True, exist_ok=True)
+        save_attachments_to_workspace(run.attachments, run_path=run_path)
 
         self._write_json(run_path / "run.json", self._run_payload(run))
+        self._write_json(run_path / "attachments.json", self._attachments_payload(run))
         self._write_json(run_path / "tasks.json", self._tasks_payload(run.tasks))
         self._write_json(run_path / "results.json", self._results_payload(run.results))
         self._write_json(run_path / "events.json", self._events_payload(run.events))
@@ -39,6 +47,10 @@ class TeamRunWorkspace:
             encoding="utf-8",
         )
         (run_path / "final.md").write_text(run.final_text or "", encoding="utf-8")
+        (run_path / "attachments.md").write_text(
+            attachments_markdown(run.attachments),
+            encoding="utf-8",
+        )
 
         tasks_by_role = {task.profile.role: task for task in run.tasks}
         results_by_role = {result.profile.role: result for result in run.results}
@@ -58,6 +70,11 @@ class TeamRunWorkspace:
         tasks_payload = self._read_json(run_path / "tasks.json")
         results_payload = self._read_json(run_path / "results.json")
         events_payload = self._read_json(run_path / "events.json")
+        attachments_payload = (
+            self._read_json(run_path / "attachments.json")
+            if (run_path / "attachments.json").exists()
+            else {"attachments": []}
+        )
         messages_payload = (
             self._read_json(run_path / "messages.json")
             if (run_path / "messages.json").exists()
@@ -75,6 +92,10 @@ class TeamRunWorkspace:
             started_at=self._parse_optional_datetime(run_payload.get("started_at")),
             completed_at=self._parse_optional_datetime(run_payload.get("finished_at")),
         )
+        run.attachments = [
+            attachment_from_payload(attachment)
+            for attachment in attachments_payload.get("attachments", [])
+        ]
         run.tasks = [
             AgentTask(
                 id=task["task_id"],
@@ -144,7 +165,14 @@ class TeamRunWorkspace:
             "finished_at": self._serialize_datetime(run.completed_at),
             "final_result": run.final_text,
             "error_message": run.error_message,
+            "attachments_count": len(run.attachments),
             "agents": self._agent_summaries(run),
+        }
+
+    def _attachments_payload(self, run: TeamRun) -> dict[str, Any]:
+        return {
+            "run_id": run.id,
+            "attachments": [attachment_payload(attachment) for attachment in run.attachments],
         }
 
     def _agent_summaries(self, run: TeamRun) -> list[dict[str, Any]]:

@@ -5,6 +5,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from astra_nexus.team.attachments import (
+    TeamAttachmentExtractionStatus,
+    TeamInputAttachment,
+)
 from astra_nexus.team.models import AgentProfile, AgentResult, AgentRole, RunEvent
 
 DEFAULT_PREVIOUS_RESULTS_MAX_CHARS = 16000
@@ -18,6 +22,7 @@ class AgentContext:
     current_agent_name: str
     previous_results: Sequence[AgentResult] = ()
     previous_events: Sequence[RunEvent] = ()
+    attachments: Sequence[TeamInputAttachment] = ()
     workspace_path: Path | str | None = None
     extra_instructions: Sequence[str] = ()
 
@@ -54,6 +59,7 @@ class TeamPromptBuilder:
                 "previous_results_truncated": previous_results_truncated,
                 "previous_results_max_chars": self.previous_results_max_chars,
                 "previous_events_count": len(context.previous_events),
+                "attachments_count": len(context.attachments),
                 "workspace_path": str(context.workspace_path) if context.workspace_path else None,
             },
         )
@@ -97,6 +103,8 @@ class TeamPromptBuilder:
             "Задача пользователя:",
             context.user_task,
             "",
+            self._attachments_section(context.attachments),
+            "",
             previous_results_section,
         ]
 
@@ -139,6 +147,44 @@ class TeamPromptBuilder:
         for event in previous_events[-10:]:
             role = f" / {event.agent_role.value}" if event.agent_role is not None else ""
             lines.append(f"- {event.type.value}{role}: {event.message}")
+        return "\n".join(lines)
+
+    def _attachments_section(self, attachments: Sequence[TeamInputAttachment]) -> str:
+        if not attachments:
+            return "Файлы пользователя:\nФайлов нет."
+
+        lines = ["Файлы пользователя:"]
+        for index, attachment in enumerate(attachments, start=1):
+            lines.extend(
+                [
+                    "",
+                    f"### {index}. {attachment.original_filename}",
+                    f"- Stored filename: {attachment.stored_filename}",
+                    f"- Content type: {attachment.content_type or 'unknown'}",
+                    f"- Size: {attachment.size_bytes} bytes",
+                    f"- Source: {attachment.source}",
+                    f"- Local path: {attachment.local_path or 'not_available'}",
+                    f"- Extraction status: {attachment.extraction_status.value}",
+                ]
+            )
+            if attachment.extraction_status == TeamAttachmentExtractionStatus.EXTRACTED:
+                lines.extend(
+                    [
+                        "",
+                        "Извлечённый текст:",
+                        "```text",
+                        attachment.extracted_text or "",
+                        "```",
+                    ]
+                )
+            elif attachment.extraction_status == TeamAttachmentExtractionStatus.ERROR:
+                lines.append(
+                    f"Ошибка извлечения текста: {attachment.extraction_error or 'unknown error'}"
+                )
+            else:
+                lines.append(
+                    "Текст не извлечён; файл доступен как metadata/path для будущих tools."
+                )
         return "\n".join(lines)
 
 

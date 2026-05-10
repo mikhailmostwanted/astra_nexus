@@ -1,3 +1,11 @@
+from astra_nexus.team.attachments import (
+    TeamAttachmentExtractionStatus,
+    TeamAttachmentManifest,
+    TeamAttachmentProcessor,
+    TeamAttachmentType,
+    TeamAttachmentValidationError,
+    TeamInputAttachment,
+)
 from astra_nexus.team.fake_provider import FakeProviderCall, FakeTeamProvider
 from astra_nexus.team.intake import (
     TeamInput,
@@ -87,7 +95,13 @@ __all__ = [
     "TeamMessageSink",
     "TeamMessageType",
     "TeamActiveRun",
+    "TeamAttachmentExtractionStatus",
+    "TeamAttachmentManifest",
+    "TeamAttachmentProcessor",
+    "TeamAttachmentType",
+    "TeamAttachmentValidationError",
     "TeamConversationController",
+    "TeamInputAttachment",
     "TeamInput",
     "TeamInputIntent",
     "TeamIntakeDecision",

@@ -6,6 +6,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from astra_nexus.team.attachments import TeamInputAttachment
 from astra_nexus.team.fake_provider import FakeTeamProvider
 from astra_nexus.team.models import TeamRun
 from astra_nexus.team.orchestrator import AsyncTeamOrchestrator
@@ -29,12 +30,17 @@ class TeamInputIntent(StrEnum):
 @dataclass(frozen=True)
 class TeamInput:
     text: str = ""
+    attachments: tuple[TeamInputAttachment, ...] = ()
     attachments_count: int = 0
     active_run_id: str | None = None
     last_run_id: str | None = None
     failed_run_id: str | None = None
     has_active_run: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.attachments and self.attachments_count == 0:
+            object.__setattr__(self, "attachments_count", len(self.attachments))
 
     @property
     def normalized_text(self) -> str:
@@ -149,7 +155,8 @@ class TeamIntakeRouter:
                 TeamInputIntent.FILE_TASK,
                 0.82,
                 "attachments without task text",
-                "Босс, вижу файл. Что именно проверить?",
+                "Вижу файл. Запускаю команду.",
+                should_start_run=True,
             )
         if team_input.active_run_id and self._contains_any(text, self.followup_phrases):
             return self._decision(
@@ -254,7 +261,10 @@ class TeamConversationController:
 
         if decision.should_start_run:
             orchestrator = self._orchestrator()
-            outcome = await orchestrator.run(team_input.text.strip())
+            outcome = await orchestrator.run(
+                team_input.text.strip(),
+                attachments=team_input.attachments,
+            )
             self.runs.append(outcome.run)
             workspace_path = self.workspace.save(outcome.run) if self.workspace else None
             return TeamConversationResult(

@@ -106,6 +106,7 @@
 - Добавлен Team Runtime / Conversation Controller для связки intake, orchestrator, workspace, resume и message sink.
 - Добавлен Telegram Team Bridge v1 как тонкая aiogram-оболочка над runtime/controller.
 - Добавлен Telegram Team Jobs v1: background jobs, `/status`, `/stopall` и защита от дублей в одном чате.
+- Добавлен Files for Team Tasks v1: attachments manifest, `input_files/`, txt/md extraction и file context в prompts.
 
 ---
 

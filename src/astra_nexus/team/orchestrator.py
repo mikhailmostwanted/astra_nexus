@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from astra_nexus.team.attachments import TeamInputAttachment
 from astra_nexus.team.messages import (
     NullTeamMessageSink,
     TeamMessageRenderer,
@@ -98,8 +99,13 @@ class AsyncTeamOrchestrator:
         self.message_renderer = message_renderer or TeamMessageRenderer(self.profiles_by_role)
         self.runs: list[TeamRun] = []
 
-    async def run(self, user_task: str) -> TeamRunOutcome:
-        team_run = TeamRun(user_task=user_task)
+    async def run(
+        self,
+        user_task: str,
+        *,
+        attachments: Sequence[TeamInputAttachment] = (),
+    ) -> TeamRunOutcome:
+        team_run = TeamRun(user_task=user_task, attachments=list(attachments))
         self.runs.append(team_run)
         self._start_run(team_run)
         return await self._execute_run(team_run)
@@ -285,6 +291,7 @@ class AsyncTeamOrchestrator:
                 current_agent_name=profile.display_name,
                 previous_results=previous_results,
                 previous_events=tuple(team_run.events),
+                attachments=tuple(team_run.attachments),
                 workspace_path=self.workspace_path,
                 extra_instructions=self.extra_instructions,
             ),

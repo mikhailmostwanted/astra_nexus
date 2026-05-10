@@ -144,7 +144,7 @@ class TeamConversationController:
         active = TeamActiveRun(run_id="pending", user_task=user_task)
         self._register_started(active)
         try:
-            outcome = await orchestrator.run(user_task)
+            outcome = await orchestrator.run(user_task, attachments=team_input.attachments)
         except TeamProviderError as exc:
             failed_run = orchestrator.runs[-1] if orchestrator.runs else None
             if failed_run is None:
@@ -270,7 +270,8 @@ class TeamConversationController:
             target = decision.target_run_id or team_input.last_run_id or "last"
             return f"Правка результата run {target}: {text}"
         if decision.intent == TeamInputIntent.FILE_TASK and team_input.attachments_count > 0:
-            return f"Задача по файлам ({team_input.attachments_count}): {text}"
+            task_text = text or "Проверь приложенные файлы."
+            return f"Задача по файлам ({team_input.attachments_count}): {task_text}"
         return text
 
     def _team_input(self, incoming: TeamInput | str, **metadata: Any) -> TeamInput:

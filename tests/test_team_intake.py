@@ -58,12 +58,12 @@ def test_empty_input_without_file_is_empty_input() -> None:
     assert decision.user_visible_reply == "Не вижу задачи. Напиши, что нужно сделать."
 
 
-def test_file_without_text_is_file_task_clarification_without_run() -> None:
+def test_file_without_text_is_file_task_and_starts_run() -> None:
     decision = TeamIntakeRouter().route(TeamInput(text="", attachments_count=1))
 
     assert decision.intent == TeamInputIntent.FILE_TASK
-    assert decision.should_start_run is False
-    assert decision.user_visible_reply == "Босс, вижу файл. Что именно проверить?"
+    assert decision.should_start_run is True
+    assert decision.user_visible_reply == "Вижу файл. Запускаю команду."
 
 
 def test_stopall_is_stop_all_intent() -> None:

@@ -9,6 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from astra_nexus.config.settings import Settings, load_settings
+from astra_nexus.team.attachments import (
+    TeamAttachmentProcessor,
+    TeamInputAttachment,
+)
 from astra_nexus.team.fake_provider import FakeTeamProvider
 from astra_nexus.team.intake import TeamInput, TeamInputIntent, TeamIntakeDecision
 from astra_nexus.team.jobs import (
@@ -36,6 +40,10 @@ DEFAULT_PROVIDER = "fake"
 class TelegramTeamBridgeConfig:
     provider: str = DEFAULT_PROVIDER
     workspace_root: Path = Path("data/team_runs")
+    uploads_root: Path = Path("data/team_uploads")
+    attachment_max_files: int = 5
+    attachment_max_bytes: int = 10 * 1024 * 1024
+    attachment_text_max_chars: int = 20000
     log_chat_id: int | None = None
     allowed_chat_ids: tuple[int, ...] = ()
 
@@ -44,6 +52,10 @@ class TelegramTeamBridgeConfig:
         return cls(
             provider=settings.team_telegram_provider,
             workspace_root=settings.team_runs_dir,
+            uploads_root=settings.team_uploads_dir,
+            attachment_max_files=settings.team_attachments_max_files,
+            attachment_max_bytes=settings.team_attachment_max_bytes,
+            attachment_text_max_chars=settings.team_attachment_text_max_chars,
             log_chat_id=settings.team_telegram_log_chat_id,
             allowed_chat_ids=_parse_allowed_chat_ids(settings.team_telegram_allowed_chat_ids),
         )
@@ -170,17 +182,22 @@ class TelegramTeamBridge:
             provider_factory=self.provider_factory,
         )
         self.jobs = jobs or TeamJobManager()
+        self.attachment_processor = TeamAttachmentProcessor(
+            max_files=self.config.attachment_max_files,
+            max_bytes=self.config.attachment_max_bytes,
+            text_max_chars=self.config.attachment_text_max_chars,
+        )
         self._send_tasks: set[asyncio.Task[None]] = set()
         self._watch_tasks: set[asyncio.Task[None]] = set()
 
     async def handle_message(self, message: Any) -> TeamRuntimeResponse | None:
         chat_id = int(message.chat.id)
         text = _message_text(message)
-        attachments_count = _attachments_count(message)
+        attachments = await self._attachments_from_message(chat_id=chat_id, message=message)
         return await self.handle_text(
             chat_id=chat_id,
             text=text,
-            attachments_count=attachments_count,
+            attachments=attachments,
         )
 
     async def handle_text(
@@ -189,6 +206,7 @@ class TelegramTeamBridge:
         chat_id: int,
         text: str,
         attachments_count: int = 0,
+        attachments: tuple[TeamInputAttachment, ...] = (),
     ) -> TeamRuntimeResponse | None:
         if not self._chat_allowed(chat_id):
             await self._send(
@@ -205,6 +223,7 @@ class TelegramTeamBridge:
             controller=controller,
             text=text,
             attachments_count=attachments_count,
+            attachments=attachments,
         )
         decision = controller.router.route(team_input)
         session_id = self._session_id(chat_id)
@@ -297,9 +316,11 @@ class TelegramTeamBridge:
         controller: TeamConversationController,
         text: str,
         attachments_count: int,
+        attachments: tuple[TeamInputAttachment, ...],
     ) -> TeamInput:
         return TeamInput(
             text=text,
+            attachments=attachments,
             attachments_count=attachments_count,
             active_run_id=next(iter(controller.state.active_runs), None),
             last_run_id=controller.state.last_run_id,
@@ -467,6 +488,36 @@ class TelegramTeamBridge:
         if response.status.value == "failed" and response.run_id is not None:
             lines.append(f"Можно продолжить: astra-nexus-team-resume {response.run_id}")
         return "\n".join(line for line in lines if line)
+
+    async def _attachments_from_message(
+        self,
+        *,
+        chat_id: int,
+        message: Any,
+    ) -> tuple[TeamInputAttachment, ...]:
+        explicit = getattr(message, "team_attachments", None)
+        if explicit is not None:
+            return self.attachment_processor.process(tuple(explicit))
+
+        document = getattr(message, "document", None)
+        if document is None:
+            return ()
+
+        upload_path = await self._download_document(chat_id=chat_id, document=document)
+        return self.attachment_processor.prepare_paths([upload_path], source="telegram")
+
+    async def _download_document(self, *, chat_id: int, document: Any) -> Path:
+        filename = getattr(document, "file_name", None) or getattr(document, "file_id", "file")
+        destination_dir = self.config.uploads_root / str(chat_id)
+        destination_dir.mkdir(parents=True, exist_ok=True)
+        destination = destination_dir / filename
+        download = getattr(self.bot, "download", None)
+        if download is None:
+            raise RuntimeError("Telegram bot does not support document download")
+        result = download(document, destination=destination)
+        if asyncio.iscoroutine(result):
+            await result
+        return destination
 
 
 async def run_preview(argv: list[str] | None = None) -> int:

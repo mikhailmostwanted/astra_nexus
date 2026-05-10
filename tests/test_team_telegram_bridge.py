@@ -16,6 +16,7 @@ from astra_nexus.team import (
     TeamRuntimeStatus,
 )
 from astra_nexus.team import telegram_bridge as telegram_bridge_module
+from astra_nexus.team.attachments import TeamAttachmentProcessor
 from astra_nexus.team.fake_provider import FakeTeamProvider
 from astra_nexus.team.jobs import TeamJobStatus
 from astra_nexus.team.models import AgentProfile, AgentResult
@@ -215,6 +216,63 @@ def test_telegram_failed_background_job_is_saved_as_last_failed() -> None:
         assert failed.status == TeamJobStatus.FAILED
         assert bridge.jobs.last_failed("100").job_id == failed.job_id
         assert any("Можно продолжить" in message.text for message in bot.messages)
+
+    asyncio.run(scenario())
+
+
+def test_telegram_bridge_with_attachment_creates_background_file_job(tmp_path) -> None:
+    async def scenario() -> None:
+        file_path = tmp_path / "task.md"
+        file_path.write_text("Контекст из вложения", encoding="utf-8")
+        provider = FakeTeamProvider()
+        attachments = TeamAttachmentProcessor().prepare_paths([file_path], source="test")
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake"),
+            provider_factory=lambda: provider,
+        )
+
+        response = await bridge.handle_text(chat_id=100, text="", attachments=attachments)
+        snapshot = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+
+        assert response.status == TeamRuntimeStatus.RUNNING
+        assert response.decision.intent.value == "file_task"
+        assert snapshot.status == TeamJobStatus.COMPLETED
+        assert "Контекст из вложения" in provider.calls[0].prompt.user_prompt
+
+    asyncio.run(scenario())
+
+
+def test_telegram_bridge_accepts_message_attachment_abstraction(tmp_path) -> None:
+    async def scenario() -> None:
+        class Chat:
+            id = 100
+
+        class Message:
+            chat = Chat()
+            text = ""
+
+        file_path = tmp_path / "telegram-note.txt"
+        file_path.write_text("Telegram file context", encoding="utf-8")
+        provider = FakeTeamProvider()
+        Message.team_attachments = TeamAttachmentProcessor().prepare_paths(
+            [file_path],
+            source="telegram_test",
+        )
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake"),
+            provider_factory=lambda: provider,
+        )
+
+        response = await bridge.handle_message(Message())
+        snapshot = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+
+        assert response.decision.intent.value == "file_task"
+        assert snapshot.status == TeamJobStatus.COMPLETED
+        assert "Telegram file context" in provider.calls[0].prompt.user_prompt
 
     asyncio.run(scenario())
 

@@ -69,6 +69,38 @@ class Settings(BaseSettings):
             "ASTRA_TEAM_PREVIOUS_RESULTS_MAX_CHARS",
         ),
     )
+    team_attachments_max_files: int = Field(
+        default=5,
+        validation_alias=AliasChoices(
+            "team_attachments_max_files",
+            "TEAM_ATTACHMENTS_MAX_FILES",
+            "ASTRA_TEAM_ATTACHMENTS_MAX_FILES",
+        ),
+    )
+    team_attachment_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        validation_alias=AliasChoices(
+            "team_attachment_max_bytes",
+            "TEAM_ATTACHMENT_MAX_BYTES",
+            "ASTRA_TEAM_ATTACHMENT_MAX_BYTES",
+        ),
+    )
+    team_attachment_text_max_chars: int = Field(
+        default=20000,
+        validation_alias=AliasChoices(
+            "team_attachment_text_max_chars",
+            "TEAM_ATTACHMENT_TEXT_MAX_CHARS",
+            "ASTRA_TEAM_ATTACHMENT_TEXT_MAX_CHARS",
+        ),
+    )
+    team_uploads_dir: Path = Field(
+        default=Path("data/team_uploads"),
+        validation_alias=AliasChoices(
+            "team_uploads_dir",
+            "TEAM_UPLOADS_DIR",
+            "ASTRA_TEAM_UPLOADS_DIR",
+        ),
+    )
     brain_provider: str = Field(
         default="dummy",
         validation_alias=AliasChoices("brain_provider", "ASTRA_BRAIN_PROVIDER", "BRAIN_PROVIDER"),
