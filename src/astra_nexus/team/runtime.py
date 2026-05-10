@@ -118,6 +118,14 @@ class TeamConversationController:
         if decision.intent == TeamInputIntent.STATUS_REQUEST:
             return self._status_response(decision)
 
+        if decision.intent == TeamInputIntent.RUNS_REQUEST:
+            return self._response(
+                decision=decision,
+                user_visible_reply=(
+                    "История запусков доступна через Telegram /runs или CLI preview."
+                ),
+            )
+
         if decision.intent == TeamInputIntent.STOP_ALL:
             return self._stop_all(decision)
 
@@ -160,6 +168,7 @@ class TeamConversationController:
             self.state.active_runs.pop(active.run_id, None)
             active.run_id = failed_run.id
             self._register_started(active)
+            self._apply_run_metadata(failed_run, team_input.metadata)
             workspace_path = self._save(failed_run)
             self._register_failed(failed_run, workspace_path=workspace_path)
             self.runs.append(failed_run)
@@ -176,6 +185,7 @@ class TeamConversationController:
         self.state.active_runs.pop(active.run_id, None)
         active.run_id = outcome.run.id
         self._register_started(active)
+        self._apply_run_metadata(outcome.run, team_input.metadata)
         workspace_path = self._save(outcome.run)
         self._register_completed(outcome.run, workspace_path=workspace_path)
         self.runs.append(outcome.run)
@@ -204,6 +214,7 @@ class TeamConversationController:
             outcome = await orchestrator.resume(run)
         except TeamProviderError as exc:
             failed_run = orchestrator.runs[-1] if orchestrator.runs else run
+            self._apply_run_metadata(failed_run, {"resumed": True})
             workspace_path = self._save(failed_run)
             self._register_failed(failed_run, workspace_path=workspace_path)
             self.runs.append(failed_run)
@@ -215,6 +226,7 @@ class TeamConversationController:
                 user_visible_reply=f"Resume завершился с ошибкой: {exc}",
             )
 
+        self._apply_run_metadata(outcome.run, {"resumed": True})
         workspace_path = self._save(outcome.run)
         self._register_completed(outcome.run, workspace_path=workspace_path)
         self.runs.append(outcome.run)
@@ -304,6 +316,12 @@ class TeamConversationController:
         if self.workspace is None:
             return None
         return self.workspace.save(run)
+
+    def _apply_run_metadata(self, run: TeamRun, metadata: dict[str, Any]) -> None:
+        clean_metadata = {key: value for key, value in metadata.items() if value is not None}
+        clean_metadata.setdefault("provider", self.provider.name)
+        clean_metadata.setdefault("execution_mode", str(run.execution_mode))
+        run.runtime_metadata.update(clean_metadata)
 
     def _register_started(self, active: TeamActiveRun) -> None:
         self.state.active_runs[active.run_id] = active

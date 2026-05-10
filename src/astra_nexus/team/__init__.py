@@ -83,6 +83,7 @@ from astra_nexus.team.review_protocol import (
     TeamRevisionRequest,
     TeamTaskBrief,
 )
+from astra_nexus.team.run_registry import TeamRunRegistry, TeamRunRegistryEntry
 from astra_nexus.team.runtime import (
     TeamActiveRun,
     TeamConversationController,
@@ -174,6 +175,8 @@ __all__ = [
     "TeamRuntimeStatus",
     "TeamRun",
     "TeamRunOutcome",
+    "TeamRunRegistry",
+    "TeamRunRegistryEntry",
     "TeamRunWorkspace",
     "TeamTaskBrief",
     "RecordingTelegramBot",

@@ -6,7 +6,7 @@ import importlib
 import random
 import tempfile
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ from astra_nexus.team.jobs import (
 )
 from astra_nexus.team.messages import TeamMessage, TeamMessageChannel, TeamMessageSink
 from astra_nexus.team.provider import TeamProvider
+from astra_nexus.team.run_registry import TeamRunRegistry, TeamRunRegistryEntry
 from astra_nexus.team.runtime import (
     TeamConversationController,
     TeamRuntimeResponse,
@@ -265,6 +266,7 @@ class TelegramTeamBridge:
         config: TelegramTeamBridgeConfig | None = None,
         provider_factory: ProviderFactory | None = None,
         registry: TelegramTeamSessionRegistry | None = None,
+        run_registry: TeamRunRegistry | None = None,
         jobs: TeamJobManager | None = None,
     ) -> None:
         self.bot = bot
@@ -274,6 +276,7 @@ class TelegramTeamBridge:
             config=self.config,
             provider_factory=self.provider_factory,
         )
+        self.run_registry = run_registry or TeamRunRegistry(self.config.workspace_root)
         self.jobs = jobs or TeamJobManager()
         self.attachment_processor = TeamAttachmentProcessor(
             max_files=self.config.attachment_max_files,
@@ -327,6 +330,17 @@ class TelegramTeamBridge:
                 controller=controller,
                 team_input=team_input,
                 decision=decision,
+            )
+            await self._send(
+                TelegramOutgoingMessage(chat_id=chat_id, text=response.user_visible_reply)
+            )
+            return response
+
+        if decision.intent == TeamInputIntent.RUNS_REQUEST:
+            response = self._handle_runs(
+                session_id=session_id,
+                decision=decision,
+                state=controller.state,
             )
             await self._send(
                 TelegramOutgoingMessage(chat_id=chat_id, text=response.user_visible_reply)
@@ -528,11 +542,29 @@ class TelegramTeamBridge:
         team_input: TeamInput,
         decision: TeamIntakeDecision,
     ) -> TeamRuntimeResponse:
+        job_context: dict[str, str] = {}
+
+        async def run_job() -> TeamRuntimeResponse:
+            metadata = {
+                "session_id": session_id,
+                "chat_id": str(chat_id),
+                "job_id": job_context.get("job_id"),
+                "provider": self.config.provider,
+                "execution_mode": "sequential",
+                "intent": decision.intent.value,
+            }
+            return await session.controller.handle(
+                replace(
+                    team_input,
+                    metadata={**team_input.metadata, **metadata},
+                )
+            )
+
         try:
             handle = self.jobs.start(
                 session_id=session_id,
                 user_task=team_input.text.strip(),
-                runner=lambda: session.controller.handle(team_input),
+                runner=run_job,
             )
         except TeamJobAlreadyActiveError as exc:
             return TeamRuntimeResponse(
@@ -545,6 +577,7 @@ class TelegramTeamBridge:
                 state=session.controller.state,
             )
 
+        job_context["job_id"] = handle.job.id
         session.sink.set_job_context(job_id=handle.job.id, intent=decision.intent.value)
         self._schedule_log(
             text="run_started",
@@ -576,7 +609,7 @@ class TelegramTeamBridge:
         team_input: TeamInput,
         decision: TeamIntakeDecision,
     ) -> TeamRuntimeResponse:
-        snapshot = self.jobs.snapshot(session_id)
+        snapshot = self.jobs.active(session_id)
         if snapshot is not None:
             return self._job_response(
                 decision=decision,
@@ -584,7 +617,36 @@ class TelegramTeamBridge:
                 state=controller.state,
                 text=self._status_text(snapshot),
             )
+        registry_entry = self.run_registry.last_terminal_run(session_id=session_id)
+        if registry_entry is not None:
+            return TeamRuntimeResponse(
+                user_visible_reply=self._registry_status_text(registry_entry),
+                decision=decision,
+                status=self._runtime_status_from_registry(registry_entry.status),
+                run_id=registry_entry.run_id,
+                final_text=registry_entry.final_result,
+                workspace_path=registry_entry.workspace_path,
+                state=controller.state,
+            )
         return await controller.handle(team_input)
+
+    def _handle_runs(
+        self,
+        *,
+        session_id: str,
+        decision: TeamIntakeDecision,
+        state: Any,
+    ) -> TeamRuntimeResponse:
+        entries = self.run_registry.latest_runs(session_id=session_id, limit=5)
+        text = self._runs_text(entries)
+        return TeamRuntimeResponse(
+            user_visible_reply=text,
+            decision=decision,
+            status=TeamRuntimeStatus.IDLE,
+            run_id=entries[0].run_id if entries else None,
+            workspace_path=entries[0].workspace_path if entries else None,
+            state=state,
+        )
 
     async def _handle_stopall(
         self,
@@ -692,6 +754,17 @@ class TelegramTeamBridge:
             return TeamRuntimeStatus.FAILED
         return TeamRuntimeStatus.CANCELLED
 
+    def _runtime_status_from_registry(self, status: str) -> TeamRuntimeStatus:
+        if status == "completed":
+            return TeamRuntimeStatus.COMPLETED
+        if status == "failed":
+            return TeamRuntimeStatus.FAILED
+        if status == "cancelled":
+            return TeamRuntimeStatus.CANCELLED
+        if status == "running":
+            return TeamRuntimeStatus.RUNNING
+        return TeamRuntimeStatus.IDLE
+
     def _status_text(self, snapshot: TeamJobSnapshot) -> str:
         run = snapshot.run_id or "ещё не создан"
         workspace = snapshot.workspace_path or "нет"
@@ -752,6 +825,41 @@ class TelegramTeamBridge:
             lines.append(f"message: {snapshot.error_message}")
         if snapshot.run_id:
             lines.append(f"Можно продолжить: astra-nexus-team-resume {snapshot.run_id}")
+        return "\n".join(lines)
+
+    def _registry_status_text(self, entry: TeamRunRegistryEntry) -> str:
+        lines = [
+            "Активная задача: нет.",
+            "Кто работает: никто.",
+            f"Последний run: {entry.status}.",
+            f"run_id: {entry.run_id}",
+            f"workspace: {entry.workspace_path}",
+        ]
+        if entry.finished_at is not None:
+            lines.append(f"finished: {entry.finished_at.isoformat()}")
+        if entry.status == "completed":
+            lines.append(f"Последний результат: {_preview_text(entry.final_result or '')}")
+        elif entry.status == "failed":
+            lines.append("Последний результат: задача завершилась с ошибкой.")
+        elif entry.status == "cancelled":
+            lines.append("Последний результат: задача отменена.")
+        return "\n".join(lines)
+
+    def _runs_text(self, entries: list[TeamRunRegistryEntry]) -> str:
+        if not entries:
+            return "Пока нет сохранённых запусков для этого чата."
+        lines = ["Последние запуски команды:"]
+        for entry in entries:
+            lines.extend(
+                [
+                    "",
+                    f"- {entry.status}: {entry.title}",
+                    f"  run_id: {entry.run_id}",
+                    f"  created: {_datetime_text(entry.created_at)}",
+                    f"  finished: {_datetime_text(entry.finished_at)}",
+                    f"  workspace: {entry.workspace_path}",
+                ]
+            )
         return "\n".join(lines)
 
     def _session_id(self, chat_id: int) -> str:
@@ -911,6 +1019,7 @@ async def run_live_preview(argv: list[str] | None = None) -> int:
             ("брат че думаешь", "брат че думаешь", ()),
             ("сделай краткий план AI-команды", "сделай краткий план AI-команды", ()),
             ("/status", "/status", ()),
+            ("/runs", "/runs", ()),
             ("/stopall", "/stopall", ()),
             (
                 "file without caption",
@@ -1180,6 +1289,10 @@ def _preview_text(text: str, *, limit: int = 180) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[: limit - 1].rstrip()}..."
+
+
+def _datetime_text(value: Any) -> str:
+    return value.isoformat() if value is not None else "нет"
 
 
 if __name__ == "__main__":

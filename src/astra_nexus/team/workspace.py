@@ -61,7 +61,7 @@ class TeamRunWorkspace:
         agent_results_path.mkdir(parents=True, exist_ok=True)
         save_attachments_to_workspace(run.attachments, run_path=run_path)
 
-        self._write_json(run_path / "run.json", self._run_payload(run))
+        self._write_json(run_path / "run.json", self._run_payload(run, run_path=run_path))
         self._write_json(run_path / "attachments.json", self._attachments_payload(run))
         self._write_json(run_path / "tasks.json", self._tasks_payload(run.tasks))
         self._write_json(run_path / "results.json", self._results_payload(run.results))
@@ -200,6 +200,24 @@ class TeamRunWorkspace:
             started_at=self._parse_optional_datetime(run_payload.get("started_at")),
             completed_at=self._parse_optional_datetime(run_payload.get("finished_at")),
         )
+        runtime_metadata = run_payload.get("runtime_metadata")
+        if not isinstance(runtime_metadata, dict):
+            runtime_metadata = {}
+        run.runtime_metadata = {
+            **runtime_metadata,
+            **{
+                key: run_payload.get(key)
+                for key in (
+                    "session_id",
+                    "chat_id",
+                    "job_id",
+                    "provider",
+                    "intent",
+                    "execution_mode",
+                )
+                if run_payload.get(key) is not None
+            },
+        }
         run.execution_mode = TeamExecutionMode(run_payload.get("execution_mode", "sequential"))
         run.review_protocol_enabled = run_payload.get("review_protocol_enabled", True)
         run.revision_loops_count = run_payload.get("revision_loops_count", 0)
@@ -288,16 +306,25 @@ class TeamRunWorkspace:
         ]
         return run
 
-    def _run_payload(self, run: TeamRun) -> dict[str, Any]:
+    def _run_payload(self, run: TeamRun, *, run_path: Path) -> dict[str, Any]:
+        metadata = dict(run.runtime_metadata)
         return {
             "run_id": run.id,
             "status": run.status.value,
             "user_task": run.user_task,
+            "title": _title_from_task(run.user_task),
             "created_at": self._serialize_datetime(run.created_at),
             "started_at": self._serialize_datetime(run.started_at),
             "finished_at": self._serialize_datetime(run.completed_at),
             "final_result": run.final_text,
             "error_message": run.error_message,
+            "workspace_path": str(run_path),
+            "session_id": metadata.get("session_id"),
+            "chat_id": metadata.get("chat_id"),
+            "job_id": metadata.get("job_id"),
+            "provider": metadata.get("provider"),
+            "intent": metadata.get("intent"),
+            "runtime_metadata": metadata,
             "attachments_count": len(run.attachments),
             "dialogue_turns_count": len(run.dialogue_turns),
             "execution_mode": TeamExecutionMode(run.execution_mode).value,
@@ -532,3 +559,10 @@ class TeamRunWorkspace:
 
     def _parse_optional_datetime(self, value: str | None) -> datetime | None:
         return datetime.fromisoformat(value) if value else None
+
+
+def _title_from_task(task: str, *, limit: int = 96) -> str:
+    title = " ".join(task.split())
+    if len(title) <= limit:
+        return title
+    return f"{title[: limit - 1].rstrip()}..."

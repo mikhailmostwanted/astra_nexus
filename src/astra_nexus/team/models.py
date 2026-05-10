@@ -145,6 +145,7 @@ class TeamRun:
     revision_loops_count: int = 0
     final_text: str | None = None
     error_message: str | None = None
+    runtime_metadata: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=utc_now)
     started_at: datetime | None = None
     completed_at: datetime | None = None

@@ -21,6 +21,7 @@ class TeamInputIntent(StrEnum):
     REVISE_PREVIOUS_RESULT = "revise_previous_result"
     FILE_TASK = "file_task"
     STATUS_REQUEST = "status_request"
+    RUNS_REQUEST = "runs_request"
     RESUME_RUN = "resume_run"
     STOP_ALL = "stop_all"
     EMPTY_INPUT = "empty_input"
@@ -69,6 +70,7 @@ class TeamConversationResult:
 
 class TeamIntakeRouter:
     stop_phrases = ("/stopall", "стоп все", "стоп всё", "останови всё", "остановить всех")
+    runs_phrases = ("/runs",)
     status_phrases = (
         "/status",
         "статус",
@@ -125,6 +127,13 @@ class TeamIntakeRouter:
                 "explicit stop command",
                 "Останавливаю активные процессы команды.",
                 should_stop_runs=True,
+            )
+        if self._contains_any(text, self.runs_phrases):
+            return self._decision(
+                TeamInputIntent.RUNS_REQUEST,
+                0.98,
+                "runs command detected",
+                "Сейчас покажу последние запуски команды.",
             )
         if self._contains_any(text, self.status_phrases):
             return self._decision(

@@ -113,6 +113,8 @@
 - Добавлен Telegram Live Team v1: aiogram polling runtime, allowlist чатов, файлы, `/status`, `/stopall`, main/log chat split, typing и safe fake-provider default.
 - Добавлен Telegram Team Atmosphere v1: humanized main-chat rendering, agent voice styles,
   message budget, technical log chat и безопасные NoDriver window defaults.
+- Добавлен Persistent Team Run Registry v1: файловый индекс `TEAM_RUNS_DIR`, `/runs`,
+  `/status` после restart-like состояния и tolerant чтение повреждённых `run.json`.
 
 ---
 

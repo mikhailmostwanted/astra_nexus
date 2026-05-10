@@ -254,7 +254,10 @@ astra-nexus-team-telegram-live-preview
 Команды:
 
 - `/status` показывает активную задачу, кто сейчас работает, `run_id`, workspace и последний
-  результат без длинных логов.
+  результат без длинных логов. Если процесс перезапущен и in-memory job history пустая,
+  bridge берёт последний run из persistent registry на диске.
+- `/runs` показывает последние 5 сохранённых запусков текущего chat/session: status, короткую
+  задачу, `run_id`, created/finished time и workspace path. Команда не запускает team run.
 - `/stopall` отменяет активный job в текущем chat/session и отвечает
   `Остановил активную задачу. Команда вернулась в общий чат.`; если активной задачи нет -
   `Активных задач сейчас нет.`
@@ -306,6 +309,44 @@ astra-nexus-team-atmosphere-preview
 
 Он показывает сценарии `casual text`, `new task`, `file without caption`, `file with
 caption`, `/status`, `/stopall` и явно разделяет `MAIN CHAT` / `LOG CHAT`.
+
+## Persistent Team Run Registry v1
+
+`astra_nexus.team.run_registry` добавляет файловый индекс поверх `TEAM_RUNS_DIR`
+(`data/team_runs` по умолчанию). Это не база данных: registry читает уже сохранённые
+workspace директории и `run.json`, поэтому не меняет orchestration, agent pipeline,
+Telegram UI и NoDriver.
+
+Что делает registry:
+
+- индексирует все `*/run.json` внутри `TEAM_RUNS_DIR`;
+- читает краткие поля run: `run_id`, `status`, `user_task`, timestamps, workspace path;
+- учитывает Telegram metadata, если она есть: `session_id`, `chat_id`, `job_id`,
+  `provider`, `intent`, `execution_mode`;
+- находит run по `run_id`;
+- находит последние runs по `session_id`/`chat_id`;
+- находит последний `completed`, `failed` или `cancelled` run;
+- возвращает краткий список последних runs;
+- не падает на битом `run.json`, а помечает запись как `corrupted`/`invalid`.
+
+Telegram bridge пишет runtime metadata в workspace, когда она известна. Для Telegram jobs
+это `session_id`, `chat_id`, `job_id`, `provider`, `intent`, `execution_mode`. CLI
+smoke/preview команды могут оставлять эти поля пустыми.
+
+Поведение после перезапуска:
+
+- active jobs остаются in-memory и после restart не восстанавливаются как выполняющиеся;
+- `/status` сначала смотрит active job в памяти;
+- если active job нет, `/status` смотрит последний terminal run текущего session в registry;
+- `/runs` всегда читает последние сохранённые runs из registry.
+
+Preview без Telegram API:
+
+```bash
+astra-nexus-team-runs-preview
+astra-nexus-team-runs-preview --session-id 100
+astra-nexus-team-runs-preview --limit 10
+```
 
 ## Parallel Agents Foundation v1
 
@@ -515,13 +556,15 @@ Telegram-диалог оставался предсказуемым.
 контекстной задачи.
 
 `status_request` читает runtime state и возвращает активные runs или последний
-completed/failed run. `stop_all` пока не убивает реальные provider/browser процессы, но
-помечает active runs как stopped/cancelled и очищает in-memory registry. Это foundation
-для будущей безопасной остановки Telegram-задач.
+completed/failed run, если он ещё есть в памяти. Telegram bridge дополнительно умеет
+поднять последний terminal run из файлового Team Run Registry после restart-like
+состояния. `stop_all` пока не убивает реальные provider/browser процессы, но помечает
+active runs как stopped/cancelled и очищает in-memory active state. Это foundation для
+будущей безопасной остановки Telegram-задач.
 
 Текущие ограничения:
 
-- registry только in-memory, без SQLite/Redis;
+- runtime active state остаётся in-memory, без SQLite/Redis;
 - нет реального parallel execution;
 - Telegram API не подключён;
 - stop/cancel пока архитектурный флаг, а не принудительное завершение NoDriver.
@@ -555,7 +598,10 @@ runtime, получает `TeamRuntimeResponse`, отправляет `user_visi
 
 Поддержанные команды:
 
-- `/status` - возвращает состояние активных и последних runs.
+- `/status` - возвращает состояние активной задачи, а без active job смотрит последний
+  terminal run на диске.
+- `/runs` - показывает последние сохранённые runs текущего chat/session и не запускает
+  новую задачу.
 - `/stopall` - вызывает runtime `stop_all` и помечает активные runs как stopped/cancelled.
 
 Provider mode:
@@ -577,6 +623,7 @@ Preview без реального Telegram и без NoDriver:
 astra-nexus-team-telegram-preview "брат че думаешь"
 astra-nexus-team-telegram-preview "сделай краткий план AI-команды"
 astra-nexus-team-telegram-preview "/status"
+astra-nexus-team-telegram-preview "/runs"
 astra-nexus-team-telegram-preview "/stopall"
 ```
 
@@ -591,7 +638,8 @@ TELEGRAM_BOT_TOKEN=... astra-nexus-team-telegram-bot
 - pipeline остаётся последовательным;
 - отдельных ChatGPT-чатов для агентов нет;
 - полноценной файловой обработки сложных форматов нет;
-- Telegram session registry пока in-memory;
+- Telegram session/job registry остаётся in-memory, а история runs читается из
+  файлового Team Run Registry;
 - NoDriver lifecycle/start/clean не меняется.
 
 ## Telegram Team Jobs v1
@@ -617,6 +665,8 @@ TELEGRAM_BOT_TOKEN=... astra-nexus-team-telegram-bot
   `Босс, вижу задачу. Сначала разложу её на части.`;
 - агентские `TeamMessage` продолжают уходить через Telegram sink по мере выполнения;
 - `/status` во время active job показывает job id, статус и run id, если run уже создан;
+- `/status` без active job показывает последний terminal run из файлового registry;
+- `/runs` показывает последние сохранённые runs текущего chat/session;
 - `/stopall` отменяет active job и сообщает, что команда остановлена;
 - если job completed, bridge отправляет финальный ответ;
 - если job failed, bridge отправляет понятное сообщение с run id, workspace path и resume
@@ -630,6 +680,7 @@ Preview нескольких сообщений без реального Telegr
 astra-nexus-team-telegram-job-preview \
   "сделай краткий план AI-команды" \
   "/status" \
+  "/runs" \
   "/stopall"
 ```
 
@@ -639,7 +690,7 @@ astra-nexus-team-telegram-job-preview \
 - NoDriver lifecycle/start/clean не меняется;
 - cancel best-effort: job получает `Task.cancel()`, но отдельный browser lifecycle не
   переписывается;
-- registry остаётся in-memory;
+- active job registry остаётся in-memory, persistent run history лежит в `TEAM_RUNS_DIR`;
 - полноценной файловой обработки сложных форматов нет.
 
 ## Files for Team Tasks v1

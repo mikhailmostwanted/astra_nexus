@@ -133,7 +133,7 @@ def test_telegram_status_returns_runtime_status() -> None:
         assert response.decision.intent.value == "status_request"
         assert first.run_id == completed.job_id
         assert completed.run_id in bot.messages[-1].text
-        assert "Последняя завершённая задача" in bot.messages[-1].text
+        assert "Последний run: completed." in bot.messages[-1].text
 
     asyncio.run(scenario())
 
