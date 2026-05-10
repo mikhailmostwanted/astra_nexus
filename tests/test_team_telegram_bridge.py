@@ -108,6 +108,7 @@ def test_telegram_preview_task_starts_background_job() -> None:
 
         provider.release.set()
         completed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
 
         assert completed.status == TeamJobStatus.COMPLETED
         assert bridge.registry.get(100).state.last_completed_run_id == completed.run_id
@@ -304,6 +305,37 @@ def test_telegram_team_message_sink_routes_main_and_log_messages() -> None:
     assert sink.outbox[0].text == "[Артём] Босс, принял задачу."
     assert sink.outbox[1].chat_id == 200
     assert sink.outbox[1].text == "[Лог] agent_started"
+
+
+def test_telegram_bridge_sends_dialogue_to_main_chat_and_events_to_log_chat() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake", log_chat_id=200),
+        )
+
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        main_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.MAIN_CHAT
+        ]
+        log_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.LOG_CHAT
+        ]
+        assert any("[Артём] Босс, взял задачу" in text for text in main_texts)
+        assert any("[Саша] Собираю финальную версию." in text for text in main_texts)
+        assert any("[Лог] Командный run начат." in text for text in log_texts)
+        assert any("[Лог] Финальный сборщик подготовил ответ." in text for text in log_texts)
+        assert all("Командный run начат" not in text for text in main_texts)
+
+    asyncio.run(scenario())
 
 
 def test_telegram_bridge_fake_provider_does_not_import_nodriver_adapter() -> None:

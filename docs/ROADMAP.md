@@ -107,6 +107,7 @@
 - Добавлен Telegram Team Bridge v1 как тонкая aiogram-оболочка над runtime/controller.
 - Добавлен Telegram Team Jobs v1: background jobs, `/status`, `/stopall` и защита от дублей в одном чате.
 - Добавлен Files for Team Tasks v1: attachments manifest, `input_files/`, txt/md extraction и file context в prompts.
+- Добавлен Team Dialogue v1: живой transcript агентов, `team_chat.json`/`team_chat.md` и разделение main-chat/log-chat.
 
 ---
 
@@ -127,6 +128,7 @@
   - где возникла ошибка;
   - какой итоговый результат готов.
 - Сделать человеческие сообщения агентов, не сухие системные статусы.
+- Добавить foundation для живого командного диалога агентов. (v1 добавлен как dialogue transcript и main-chat stream.)
 - Добавить команду `/stopall`.
 - Добавить аварийную отмену всех активных runs.
 - Сделать нормальное поведение при обычном разговоре:

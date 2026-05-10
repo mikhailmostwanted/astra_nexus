@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from astra_nexus.team.attachments import TeamInputAttachment
+from astra_nexus.team.dialogue import (
+    TeamDialogueTurn,
+    build_agent_finish_turn,
+    build_agent_start_turn,
+    build_completed_turn,
+    build_failed_turn,
+    dialogue_turn_to_messages,
+)
 from astra_nexus.team.messages import (
     NullTeamMessageSink,
     TeamMessageRenderer,
@@ -146,6 +154,7 @@ class AsyncTeamOrchestrator:
             "Командный run завершён.",
             payload={"status": team_run.status.value, "final_result": final_text},
         )
+        self._append_dialogue_turn(team_run, build_completed_turn(run_id=team_run.id))
         return TeamRunOutcome(run=team_run, final_text=final_text)
 
     def _start_run(self, team_run: TeamRun) -> None:
@@ -176,6 +185,14 @@ class AsyncTeamOrchestrator:
         agent_task.started_at = utc_now()
         agent_task.completed_at = None
         agent_task.error_message = None
+        self._append_dialogue_turn(
+            team_run,
+            build_agent_start_turn(
+                run_id=team_run.id,
+                profile=profile,
+                attachments=team_run.attachments,
+            ),
+        )
         self._append_agent_event(
             team_run,
             RunEventType.AGENT_STARTED,
@@ -273,6 +290,10 @@ class AsyncTeamOrchestrator:
             agent_task=agent_task,
             message=AGENT_FINISHED_MESSAGES[profile.role],
             payload={"result_id": result.id, "status": agent_task.status.value},
+        )
+        self._append_dialogue_turn(
+            team_run,
+            build_agent_finish_turn(run_id=team_run.id, profile=profile),
         )
 
     def _build_prompt(
@@ -378,6 +399,10 @@ class AsyncTeamOrchestrator:
                 "transient": exc.transient,
             },
         )
+        self._append_dialogue_turn(
+            team_run,
+            build_failed_turn(run_id=team_run.id, profile=agent_task.profile),
+        )
         self._append_event(
             team_run,
             RunEventType.RUN_FAILED,
@@ -440,6 +465,12 @@ class AsyncTeamOrchestrator:
 
     def _emit_event_messages(self, team_run: TeamRun, event: RunEvent) -> None:
         for message in self.message_renderer.render_event(event):
+            team_run.messages.append(message)
+            self.message_sink.publish(message)
+
+    def _append_dialogue_turn(self, team_run: TeamRun, turn: TeamDialogueTurn) -> None:
+        team_run.dialogue_turns.append(turn)
+        for message in dialogue_turn_to_messages(turn):
             team_run.messages.append(message)
             self.message_sink.publish(message)
 

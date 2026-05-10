@@ -11,6 +11,11 @@ from astra_nexus.team.attachments import (
     attachments_markdown,
     save_attachments_to_workspace,
 )
+from astra_nexus.team.dialogue import (
+    dialogue_markdown,
+    dialogue_transcript_payload,
+    dialogue_turn_from_payload,
+)
 from astra_nexus.team.messages import TeamMessage, TeamMessageChannel, TeamMessageType
 from astra_nexus.team.models import (
     AgentResult,
@@ -41,9 +46,17 @@ class TeamRunWorkspace:
         self._write_json(run_path / "results.json", self._results_payload(run.results))
         self._write_json(run_path / "events.json", self._events_payload(run.events))
         self._write_json(run_path / "messages.json", self._messages_payload(run.messages))
+        self._write_json(
+            run_path / "team_chat.json",
+            dialogue_transcript_payload(run.dialogue_turns, run_id=run.id),
+        )
         self._write_events(run_path / "events.jsonl", run.events)
         (run_path / "messages.md").write_text(
             self._messages_markdown(run.messages),
+            encoding="utf-8",
+        )
+        (run_path / "team_chat.md").write_text(
+            dialogue_markdown(run.dialogue_turns),
             encoding="utf-8",
         )
         (run_path / "final.md").write_text(run.final_text or "", encoding="utf-8")
@@ -79,6 +92,11 @@ class TeamRunWorkspace:
             self._read_json(run_path / "messages.json")
             if (run_path / "messages.json").exists()
             else []
+        )
+        dialogue_payload = (
+            self._read_json(run_path / "team_chat.json")
+            if (run_path / "team_chat.json").exists()
+            else {"turns": []}
         )
         profiles = default_profiles_by_role()
 
@@ -153,6 +171,9 @@ class TeamRunWorkspace:
             )
             for message in messages_payload
         ]
+        run.dialogue_turns = [
+            dialogue_turn_from_payload(turn) for turn in dialogue_payload.get("turns", [])
+        ]
         return run
 
     def _run_payload(self, run: TeamRun) -> dict[str, Any]:
@@ -166,6 +187,7 @@ class TeamRunWorkspace:
             "final_result": run.final_text,
             "error_message": run.error_message,
             "attachments_count": len(run.attachments),
+            "dialogue_turns_count": len(run.dialogue_turns),
             "agents": self._agent_summaries(run),
         }
 

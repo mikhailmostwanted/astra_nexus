@@ -6,6 +6,12 @@ from astra_nexus.team.attachments import (
     TeamAttachmentValidationError,
     TeamInputAttachment,
 )
+from astra_nexus.team.dialogue import (
+    TeamDialoguePhase,
+    TeamDialogueStyle,
+    TeamDialogueTranscript,
+    TeamDialogueTurn,
+)
 from astra_nexus.team.fake_provider import FakeProviderCall, FakeTeamProvider
 from astra_nexus.team.intake import (
     TeamInput,
@@ -101,6 +107,10 @@ __all__ = [
     "TeamAttachmentType",
     "TeamAttachmentValidationError",
     "TeamConversationController",
+    "TeamDialoguePhase",
+    "TeamDialogueStyle",
+    "TeamDialogueTranscript",
+    "TeamDialogueTurn",
     "TeamInputAttachment",
     "TeamInput",
     "TeamInputIntent",

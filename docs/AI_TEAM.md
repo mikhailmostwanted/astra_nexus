@@ -146,6 +146,48 @@ Prompt Engine находится в `astra_nexus.team.prompting`.
 Чтобы обычная болтовня в Telegram не считалась задачей, позже нужен отдельный
 intent/router layer.
 
+## Team Dialogue v1
+
+`astra_nexus.team.dialogue` добавляет живой transcript поверх последовательного pipeline.
+Это не отдельные ChatGPT-чаты и не параллельные агенты: orchestrator по-прежнему выполняет
+роли последовательно, но перед стартом и после результата каждого агента фиксирует короткую
+реплику в командном чате.
+
+Основные сущности:
+
+- `TeamDialogueTurn` - одна реплика агента или команды: run id, роль, display name, фаза,
+  текст, optional `reply_to_role`, timestamps и флаги видимости.
+- `TeamDialogueTranscript` - список turns одного run.
+- `TeamDialoguePhase` - `intake`, `coordination`, `analysis`, `critique`, `revision`,
+  `qa`, `finalization`, `completed`, `failed`, `cancelled`.
+- `TeamDialogueStyle` - краткая метка тона/назначения turn: working, summary, error.
+
+Main chat теперь должен получать именно dialogue turns: короткие рабочие реплики вроде
+"Босс, взял задачу. Сначала разложу её на нормальные шаги." Технические `RunEvent`
+(`run_started`, `agent_started`, `agent_finished`, `run_finished`) остаются в `log_chat`.
+Это разделяет будущую Telegram-супергруппу:
+
+- `main_chat` - видимая командная переписка и финальный результат;
+- `log_chat` - event type, run id, retry/error metadata и workspace details;
+- `debug` - внутренний dev/debug stream.
+
+Workspace дополнен файлами:
+
+- `team_chat.json` - structured transcript для будущего UI/Telegram bridge.
+- `team_chat.md` - человекочитаемый transcript.
+- `run.json` содержит `dialogue_turns_count`.
+
+Если файл сохранён как metadata-only и текст из него пока не извлечён, координатор пишет
+нормальную рабочую реплику: файл виден, но команда будет работать по метаданным и тексту
+задачи. Это не валит pipeline и не превращает main-chat в сухой технический статус.
+
+Preview без NoDriver:
+
+```bash
+astra-nexus-team-dialogue-preview "проверь идею AI-команды"
+astra-nexus-team-dialogue-preview --file docs/AI_TEAM.md "проверь файл"
+```
+
 ## Team Intake / Intent Router
 
 Перед `AsyncTeamOrchestrator` добавлен слой `astra_nexus.team.intake`. Он принимает

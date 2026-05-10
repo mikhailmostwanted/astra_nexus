@@ -9,6 +9,7 @@ from astra_nexus.utils.ids import new_id
 
 if TYPE_CHECKING:
     from astra_nexus.team.attachments import TeamInputAttachment
+    from astra_nexus.team.dialogue import TeamDialogueTurn
     from astra_nexus.team.messages import TeamMessage
 
 
@@ -118,6 +119,7 @@ class TeamRun:
     results: list[AgentResult] = field(default_factory=list)
     events: list[RunEvent] = field(default_factory=list)
     messages: list[TeamMessage] = field(default_factory=list)
+    dialogue_turns: list[TeamDialogueTurn] = field(default_factory=list)
     attachments: list[TeamInputAttachment] = field(default_factory=list)
     final_text: str | None = None
     error_message: str | None = None

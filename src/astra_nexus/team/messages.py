@@ -76,47 +76,15 @@ class TeamMessageRenderer:
 
     def render_event(self, event: RunEvent) -> list[TeamMessage]:
         if event.type == RunEventType.RUN_STARTED:
-            return [
-                self._message(
-                    event,
-                    channel=TeamMessageChannel.MAIN_CHAT,
-                    message_type=TeamMessageType.RUN_STARTED,
-                    text="Принял задачу. Запускаю команду.",
-                    author_name="Команда",
-                ),
-                self._log_message(event, TeamMessageType.RUN_STARTED),
-            ]
+            return [self._log_message(event, TeamMessageType.RUN_STARTED)]
         if event.type == RunEventType.RUN_FINISHED:
-            return [
-                self._message(
-                    event,
-                    channel=TeamMessageChannel.MAIN_CHAT,
-                    message_type=TeamMessageType.RUN_FINISHED,
-                    text="Готово, финальная версия собрана.",
-                    author_name="Команда",
-                ),
-                self._log_message(event, TeamMessageType.RUN_FINISHED),
-            ]
+            return [self._log_message(event, TeamMessageType.RUN_FINISHED)]
         if event.type == RunEventType.RUN_FAILED:
             return [self._log_message(event, TeamMessageType.SYSTEM_LOG)]
         if event.type == RunEventType.AGENT_STARTED:
-            return [
-                self._agent_message(
-                    event,
-                    message_type=TeamMessageType.AGENT_STARTED,
-                    text=self._agent_started_text(event.agent_role),
-                ),
-                self._log_message(event, TeamMessageType.AGENT_STARTED),
-            ]
+            return [self._log_message(event, TeamMessageType.AGENT_STARTED)]
         if event.type == RunEventType.AGENT_FINISHED:
-            return [
-                self._agent_message(
-                    event,
-                    message_type=TeamMessageType.AGENT_FINISHED,
-                    text=self._agent_finished_text(event.agent_role),
-                ),
-                self._log_message(event, TeamMessageType.AGENT_FINISHED),
-            ]
+            return [self._log_message(event, TeamMessageType.AGENT_FINISHED)]
         if event.type == RunEventType.AGENT_RETRY_SCHEDULED:
             return [
                 self._agent_message(

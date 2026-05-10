@@ -49,7 +49,7 @@ class FlakyMessageProvider(FakeTeamProvider):
         )
 
 
-def test_orchestrator_emits_main_chat_messages_for_run_and_agents() -> None:
+def test_orchestrator_emits_dialogue_in_main_chat_and_events_in_log_chat() -> None:
     sink = InMemoryTeamMessageSink()
     orchestrator = AsyncTeamOrchestrator(
         provider=FakeTeamProvider(),
@@ -62,15 +62,23 @@ def test_orchestrator_emits_main_chat_messages_for_run_and_agents() -> None:
     main_messages = [
         message for message in sink.messages if message.channel == TeamMessageChannel.MAIN_CHAT
     ]
+    log_messages = [
+        message for message in sink.messages if message.channel == TeamMessageChannel.LOG_CHAT
+    ]
     assert [message.type for message in main_messages] == [
+        TeamMessageType.AGENT_SAYS,
+        TeamMessageType.AGENT_SAYS,
+        TeamMessageType.AGENT_SAYS,
+    ]
+    assert [message.type for message in log_messages] == [
         TeamMessageType.RUN_STARTED,
         TeamMessageType.AGENT_STARTED,
         TeamMessageType.AGENT_FINISHED,
         TeamMessageType.RUN_FINISHED,
     ]
-    assert main_messages[1].author_role == AgentRole.COORDINATOR
-    assert main_messages[1].author_name == "Артём"
-    assert "Босс, принял задачу" in main_messages[1].text
+    assert main_messages[0].author_role == AgentRole.COORDINATOR
+    assert main_messages[0].author_name == "Артём"
+    assert "Босс, взял задачу" in main_messages[0].text
     assert main_messages[-1].text == "Готово, финальная версия собрана."
     assert outcome.run.messages == sink.messages
 
@@ -150,18 +158,17 @@ def test_workspace_saves_messages_as_json_and_markdown(tmp_path) -> None:
     messages_payload = json.loads((run_path / "messages.json").read_text(encoding="utf-8"))
     messages_markdown = (run_path / "messages.md").read_text(encoding="utf-8")
     assert [message["channel"] for message in messages_payload] == [
+        TeamMessageChannel.LOG_CHAT.value,
         TeamMessageChannel.MAIN_CHAT.value,
+        TeamMessageChannel.LOG_CHAT.value,
         TeamMessageChannel.LOG_CHAT.value,
         TeamMessageChannel.MAIN_CHAT.value,
         TeamMessageChannel.LOG_CHAT.value,
         TeamMessageChannel.MAIN_CHAT.value,
-        TeamMessageChannel.LOG_CHAT.value,
-        TeamMessageChannel.MAIN_CHAT.value,
-        TeamMessageChannel.LOG_CHAT.value,
     ]
     assert "## Main Chat" in messages_markdown
     assert "[Артём]" in messages_markdown
-    assert "Босс, принял задачу" in messages_markdown
+    assert "Босс, взял задачу" in messages_markdown
     assert "## Log Chat" in messages_markdown
     assert "[Лог]" in messages_markdown
 
@@ -194,7 +201,7 @@ def test_resume_appends_messages_instead_of_overwriting(tmp_path) -> None:
     assert [message.id for message in reloaded_run.messages[: len(messages_before)]] == [
         message.id for message in messages_before
     ]
-    assert reloaded_run.messages[-1].type == TeamMessageType.RUN_FINISHED
+    assert reloaded_run.messages[-1].text == "Готово, финальная версия собрана."
 
 
 def test_chat_preview_cli_runs_fake_provider_without_nodriver(capsys) -> None:
