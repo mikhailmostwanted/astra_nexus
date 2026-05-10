@@ -23,7 +23,10 @@ async def run(argv: list[str] | None = None) -> int:
     processor = TeamAttachmentProcessor(
         max_files=settings.team_attachments_max_files,
         max_bytes=settings.team_attachment_max_bytes,
-        text_max_chars=settings.team_attachment_text_max_chars,
+        max_extracted_chars=settings.team_attachment_max_extracted_chars,
+        max_prompt_chars=settings.team_attachment_max_prompt_chars,
+        pdf_max_pages=settings.team_attachment_pdf_max_pages,
+        docx_include_tables=settings.team_attachment_docx_include_tables,
     )
     attachments = processor.prepare_paths(tuple(args.files), source="file_preview")
     message = " ".join(args.message).strip() or DEFAULT_FILE_TASK
@@ -33,15 +36,31 @@ async def run(argv: list[str] | None = None) -> int:
         uploads_root=settings.team_uploads_dir,
         attachment_max_files=settings.team_attachments_max_files,
         attachment_max_bytes=settings.team_attachment_max_bytes,
-        attachment_text_max_chars=settings.team_attachment_text_max_chars,
+        attachment_max_extracted_chars=settings.team_attachment_max_extracted_chars,
+        attachment_max_prompt_chars=settings.team_attachment_max_prompt_chars,
+        attachment_pdf_max_pages=settings.team_attachment_pdf_max_pages,
+        attachment_docx_include_tables=settings.team_attachment_docx_include_tables,
     )
     bot = RecordingTelegramBot()
     bridge = TelegramTeamBridge(bot=bot, config=config)
 
     for attachment in attachments:
         print(f"[Файл] {attachment.original_filename}: {attachment.extraction_status.value}")
+        print(f"type: {attachment.attachment_type.value}")
+        print(f"size_bytes: {attachment.size_bytes}")
+        print(f"extracted_chars: {attachment.extracted_chars}")
+        print(f"prompt_chars: {attachment.prompt_chars}")
+        if attachment.pages_count is not None:
+            print(f"pages_count: {attachment.pages_count}")
+        if attachment.paragraphs_count is not None:
+            print(f"paragraphs_count: {attachment.paragraphs_count}")
+        if attachment.truncated:
+            print("truncated: true")
+        if attachment.extraction_error:
+            print(f"extraction_error: {attachment.extraction_error}")
         if attachment.extracted_text:
-            print(attachment.extracted_text)
+            print("preview:")
+            print(_preview_text(attachment.prompt_text or attachment.extracted_text))
     await bridge.handle_text(chat_id=args.chat_id, text=message, attachments=attachments)
     await _wait_for_preview_job(bridge=bridge, chat_id=args.chat_id)
     _print_new_messages(bot.messages, 0)
@@ -64,6 +83,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Папка для team run workspaces.",
     )
     return parser.parse_args(argv)
+
+
+def _preview_text(text: str, *, limit: int = 1200) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[: limit - 1].rstrip()}..."
 
 
 if __name__ == "__main__":

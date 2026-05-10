@@ -187,23 +187,40 @@ class TeamPromptBuilder:
                     f"### {index}. {attachment.original_filename}",
                     f"- Stored filename: {attachment.stored_filename}",
                     f"- Content type: {attachment.content_type or 'unknown'}",
+                    f"- MIME type: {attachment.mime_type or attachment.content_type or 'unknown'}",
+                    f"- Extension: {attachment.extension or 'unknown'}",
                     f"- Size: {attachment.size_bytes} bytes",
                     f"- Source: {attachment.source}",
                     f"- Local path: {attachment.local_path or 'not_available'}",
                     f"- Extraction status: {attachment.extraction_status.value}",
+                    f"- Extracted chars: {attachment.extracted_chars}",
+                    f"- Prompt chars: {attachment.prompt_chars}",
                 ]
             )
-            if attachment.extraction_status == TeamAttachmentExtractionStatus.EXTRACTED:
+            if attachment.pages_count is not None:
+                lines.append(f"- Pages count: {attachment.pages_count}")
+            if attachment.paragraphs_count is not None:
+                lines.append(f"- Paragraphs count: {attachment.paragraphs_count}")
+            if attachment.extraction_status in {
+                TeamAttachmentExtractionStatus.EXTRACTED,
+                TeamAttachmentExtractionStatus.TRUNCATED,
+            }:
+                if attachment.truncated:
+                    lines.append(
+                        "Текст файла обрезан для prompt: "
+                        f"показано {attachment.prompt_chars} из "
+                        f"{attachment.extracted_chars} извлечённых символов."
+                    )
                 lines.extend(
                     [
                         "",
                         "Извлечённый текст:",
                         "```text",
-                        attachment.extracted_text or "",
+                        attachment.prompt_text,
                         "```",
                     ]
                 )
-            elif attachment.extraction_status == TeamAttachmentExtractionStatus.ERROR:
+            elif attachment.extraction_status == TeamAttachmentExtractionStatus.FAILED:
                 lines.append(
                     f"Ошибка извлечения текста: {attachment.extraction_error or 'unknown error'}"
                 )

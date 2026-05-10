@@ -254,8 +254,8 @@ def _has_metadata_only_attachment(attachments: Iterable[TeamInputAttachment]) ->
             continue
         if attachment.extraction_status in {
             TeamAttachmentExtractionStatus.METADATA_ONLY,
-            TeamAttachmentExtractionStatus.UNSUPPORTED,
-            TeamAttachmentExtractionStatus.ERROR,
+            TeamAttachmentExtractionStatus.FAILED,
+            TeamAttachmentExtractionStatus.NOT_NEEDED,
         }:
             return True
     return False

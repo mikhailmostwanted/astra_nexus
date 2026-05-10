@@ -102,8 +102,8 @@ def build_task_brief(
     for attachment in attachments:
         if attachment.extraction_status in {
             TeamAttachmentExtractionStatus.METADATA_ONLY,
-            TeamAttachmentExtractionStatus.UNSUPPORTED,
-            TeamAttachmentExtractionStatus.ERROR,
+            TeamAttachmentExtractionStatus.FAILED,
+            TeamAttachmentExtractionStatus.NOT_NEEDED,
         }:
             risk_notes.append(
                 f"Текст файла {attachment.original_filename} недоступен полностью; "

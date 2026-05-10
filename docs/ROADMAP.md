@@ -115,6 +115,8 @@
   message budget, technical log chat и безопасные NoDriver window defaults.
 - Добавлен Persistent Team Run Registry v1: файловый индекс `TEAM_RUNS_DIR`, `/runs`,
   `/status` после restart-like состояния и tolerant чтение повреждённых `run.json`.
+- Добавлен Attachments Extraction v2: извлечение текста из `txt`, `md`, `docx`, `pdf`,
+  prompt truncation, расширенная metadata attachments и безопасные ошибки extraction.
 
 ---
 

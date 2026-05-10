@@ -52,6 +52,10 @@ class TelegramTeamBridgeConfig:
     attachment_max_files: int = 5
     attachment_max_bytes: int = 10 * 1024 * 1024
     attachment_text_max_chars: int = 20000
+    attachment_max_extracted_chars: int = 50000
+    attachment_max_prompt_chars: int = 20000
+    attachment_pdf_max_pages: int = 30
+    attachment_docx_include_tables: bool = True
     log_chat_id: int | None = None
     allowed_chat_ids: tuple[int, ...] = ()
     environment: str = "local"
@@ -69,6 +73,10 @@ class TelegramTeamBridgeConfig:
             attachment_max_files=settings.team_attachments_max_files,
             attachment_max_bytes=max_file_size_mb * 1024 * 1024,
             attachment_text_max_chars=settings.team_attachment_text_max_chars,
+            attachment_max_extracted_chars=settings.team_attachment_max_extracted_chars,
+            attachment_max_prompt_chars=settings.team_attachment_max_prompt_chars,
+            attachment_pdf_max_pages=settings.team_attachment_pdf_max_pages,
+            attachment_docx_include_tables=settings.team_attachment_docx_include_tables,
             log_chat_id=settings.team_telegram_log_chat_id,
             allowed_chat_ids=_parse_allowed_chat_ids(settings.team_telegram_allowed_chat_ids),
             environment=settings.environment,
@@ -281,7 +289,10 @@ class TelegramTeamBridge:
         self.attachment_processor = TeamAttachmentProcessor(
             max_files=self.config.attachment_max_files,
             max_bytes=self.config.attachment_max_bytes,
-            text_max_chars=self.config.attachment_text_max_chars,
+            max_extracted_chars=self.config.attachment_max_extracted_chars,
+            max_prompt_chars=self.config.attachment_max_prompt_chars,
+            pdf_max_pages=self.config.attachment_pdf_max_pages,
+            docx_include_tables=self.config.attachment_docx_include_tables,
         )
         self._send_tasks: set[asyncio.Task[None]] = set()
         self._watch_tasks: set[asyncio.Task[None]] = set()

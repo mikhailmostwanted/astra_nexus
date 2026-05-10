@@ -243,8 +243,10 @@ astra-nexus-team-telegram-live-preview
 Файлы:
 
 - Telegram document и photo сохраняются как input attachments;
-- `txt` и `md` читаются как UTF-8 через attachments layer;
-- `pdf`, `docx` и прочие форматы пока идут metadata-only;
+- `txt`, `md`, `docx` и `pdf` читаются через attachments layer;
+- `docx` извлекает обычные абзацы и, если включено, таблицы;
+- `pdf` извлекает текст по страницам и добавляет маркеры `Страница N`;
+- photo и прочие binary/unknown форматы остаются metadata-only;
 - оригинальное имя Telegram document сохраняется, файл копируется в workspace `input_files/`;
 - workspace получает `attachments.json`, `attachments.md` и `input_files/`;
 - файл без caption/текста не запускает run и отвечает:
@@ -637,7 +639,7 @@ TELEGRAM_BOT_TOKEN=... astra-nexus-team-telegram-bot
 
 - pipeline остаётся последовательным;
 - отдельных ChatGPT-чатов для агентов нет;
-- полноценной файловой обработки сложных форматов нет;
+- OCR и внешние бинарники для файлов не используются;
 - Telegram session/job registry остаётся in-memory, а история runs читается из
   файлового Team Run Registry;
 - NoDriver lifecycle/start/clean не меняется.
@@ -693,42 +695,68 @@ astra-nexus-team-telegram-job-preview \
 - active job registry остаётся in-memory, persistent run history лежит в `TEAM_RUNS_DIR`;
 - полноценной файловой обработки сложных форматов нет.
 
-## Files for Team Tasks v1
+## Attachments Extraction v2
 
 Файловый foundation добавлен в `astra_nexus.team.attachments`. Он нужен, чтобы входящее
 сообщение пользователя или Telegram-вложение могло стать частью team task без отдельной
-БД и без тяжёлого parser pipeline.
+БД и без тяжёлого parser pipeline. V2 добавляет безопасное извлечение текста из `docx`
+и `pdf` чистыми Python-библиотеками, без OCR, LibreOffice, внешних бинарников и сетевых
+запросов.
 
 Основные сущности:
 
 - `TeamInputAttachment` - один файл: original/stored filename, content type, размер,
-  source, local path, extracted text, extraction status и extraction error.
+  source, local path, extracted text, extraction status, extraction error и extraction
+  metadata.
 - `TeamAttachmentType` - `text`, `markdown`, `pdf`, `docx`, `binary`, `unknown`.
-- `TeamAttachmentExtractionStatus` - `pending`, `extracted`, `metadata_only`,
-  `unsupported`, `error`.
+- `TeamAttachmentExtractionStatus` - `not_needed`, `extracted`, `metadata_only`,
+  `failed`, `truncated`.
 - `TeamAttachmentManifest` - список файлов run.
-- `TeamAttachmentProcessor` - проверяет лимиты, читает `.txt`/`.md` и оставляет
-  остальные форматы как metadata-only.
+- `TeamAttachmentProcessor` - проверяет лимиты, санитайзит имена, читает `.txt`, `.md`,
+  `.docx`, `.pdf` и оставляет binary/photo как metadata-only.
 
 Настройки:
 
 - `TEAM_ATTACHMENTS_MAX_FILES` / `ASTRA_TEAM_ATTACHMENTS_MAX_FILES`;
 - `TEAM_ATTACHMENT_MAX_BYTES` / `ASTRA_TEAM_ATTACHMENT_MAX_BYTES`;
-- `TEAM_ATTACHMENT_TEXT_MAX_CHARS` / `ASTRA_TEAM_ATTACHMENT_TEXT_MAX_CHARS`;
+- `TEAM_ATTACHMENT_MAX_EXTRACTED_CHARS` / `ASTRA_TEAM_ATTACHMENT_MAX_EXTRACTED_CHARS` -
+  сколько извлечённого текста сохранять в attachment, default `50000`;
+- `TEAM_ATTACHMENT_MAX_PROMPT_CHARS` / `ASTRA_TEAM_ATTACHMENT_MAX_PROMPT_CHARS` -
+  сколько символов одного файла передавать в prompt, default `20000`;
+- `TEAM_ATTACHMENT_PDF_MAX_PAGES` / `ASTRA_TEAM_ATTACHMENT_PDF_MAX_PAGES` -
+  максимум PDF-страниц для извлечения, default `30`;
+- `TEAM_ATTACHMENT_DOCX_INCLUDE_TABLES` / `ASTRA_TEAM_ATTACHMENT_DOCX_INCLUDE_TABLES` -
+  включать текст таблиц DOCX, default `true`;
+- `TEAM_ATTACHMENT_TEXT_MAX_CHARS` остаётся legacy alias для prompt-лимита;
 - `TEAM_UPLOADS_DIR` / `ASTRA_TEAM_UPLOADS_DIR`.
 
-Extraction v1:
+Extraction v2:
 
 - `.txt` и `.md` читаются как UTF-8 text;
-- извлечённый текст ограничивается `TEAM_ATTACHMENT_TEXT_MAX_CHARS`;
-- `.pdf`, `.docx`, binary/unknown пока сохраняются как файл и metadata;
+- `.docx` читает абзацы и строки таблиц в plain text;
+- `.pdf` читает текст постранично и добавляет `Страница 1`, `Страница 2` и т.д.;
+- извлечённый текст хранится до `TEAM_ATTACHMENT_MAX_EXTRACTED_CHARS`;
+- prompt получает только первые `TEAM_ATTACHMENT_MAX_PROMPT_CHARS` символов файла;
+- если текст обрезан для хранения или prompt, attachment получает `truncated=true` и
+  `extraction_status=truncated`;
+- binary/unknown/photo сохраняются как файл и metadata;
 - ошибка чтения файла записывается в `extraction_error` и не валит pipeline.
+
+Metadata:
+
+- `attachments.json` сохраняет `mime_type`, `extension`, `original_size`,
+  `extracted_chars`, `prompt_chars`, `pages_count`, `paragraphs_count`, `truncated`;
+- `attachments.md` показывает имя, тип, размер, статус извлечения, количество символов,
+  страницы PDF, абзацы DOCX и ошибку, если она была;
+- старые metadata-only attachments остаются читаемыми.
 
 Prompt context:
 
 `TeamPromptBuilder` добавляет в prompt блок `Файлы пользователя`: список файлов,
 размеры, content type, local path, extraction status и extracted text, если он есть.
-Если текст не извлечён, агент явно видит, что файл доступен только как metadata/path.
+Если prompt получил обрезанный текст, агент видит строку `Текст файла обрезан для prompt`.
+Если extraction failed, агент видит причину. Если файл metadata-only, агент явно видит, что
+содержимое недоступно.
 
 Preview:
 
@@ -736,6 +764,9 @@ Preview:
 astra-nexus-team-file-preview --file docs/AI_TEAM.md "проверь файл"
 astra-nexus-team-file-preview --file docs/ROADMAP.md
 ```
+
+Preview печатает extraction status, размер, `extracted_chars`, `prompt_chars`,
+`pages_count`/`paragraphs_count` и короткий фрагмент извлечённого текста.
 
 ## Retry policy
 

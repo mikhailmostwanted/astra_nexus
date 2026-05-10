@@ -125,6 +125,40 @@ class Settings(BaseSettings):
             "ASTRA_TEAM_ATTACHMENT_TEXT_MAX_CHARS",
         ),
     )
+    team_attachment_max_extracted_chars: int = Field(
+        default=50000,
+        validation_alias=AliasChoices(
+            "team_attachment_max_extracted_chars",
+            "TEAM_ATTACHMENT_MAX_EXTRACTED_CHARS",
+            "ASTRA_TEAM_ATTACHMENT_MAX_EXTRACTED_CHARS",
+        ),
+    )
+    team_attachment_max_prompt_chars: int = Field(
+        default=20000,
+        validation_alias=AliasChoices(
+            "team_attachment_max_prompt_chars",
+            "TEAM_ATTACHMENT_MAX_PROMPT_CHARS",
+            "ASTRA_TEAM_ATTACHMENT_MAX_PROMPT_CHARS",
+            "TEAM_ATTACHMENT_TEXT_MAX_CHARS",
+            "ASTRA_TEAM_ATTACHMENT_TEXT_MAX_CHARS",
+        ),
+    )
+    team_attachment_pdf_max_pages: int = Field(
+        default=30,
+        validation_alias=AliasChoices(
+            "team_attachment_pdf_max_pages",
+            "TEAM_ATTACHMENT_PDF_MAX_PAGES",
+            "ASTRA_TEAM_ATTACHMENT_PDF_MAX_PAGES",
+        ),
+    )
+    team_attachment_docx_include_tables: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "team_attachment_docx_include_tables",
+            "TEAM_ATTACHMENT_DOCX_INCLUDE_TABLES",
+            "ASTRA_TEAM_ATTACHMENT_DOCX_INCLUDE_TABLES",
+        ),
+    )
     team_uploads_dir: Path = Field(
         default=Path("data/team_uploads"),
         validation_alias=AliasChoices(

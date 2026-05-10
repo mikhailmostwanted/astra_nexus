@@ -23,7 +23,10 @@ async def run(argv: list[str] | None = None) -> int:
         attachments = TeamAttachmentProcessor(
             max_files=settings.team_attachments_max_files,
             max_bytes=settings.team_attachment_max_bytes,
-            text_max_chars=settings.team_attachment_text_max_chars,
+            max_extracted_chars=settings.team_attachment_max_extracted_chars,
+            max_prompt_chars=settings.team_attachment_max_prompt_chars,
+            pdf_max_pages=settings.team_attachment_pdf_max_pages,
+            docx_include_tables=settings.team_attachment_docx_include_tables,
         ).prepare_paths(tuple(args.files), source="review_preview")
 
     orchestrator = AsyncTeamOrchestrator(

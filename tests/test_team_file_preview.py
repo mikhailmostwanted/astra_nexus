@@ -14,6 +14,9 @@ def test_file_preview_cli_runs_fake_provider_with_attachment(tmp_path, capsys) -
     output = capsys.readouterr().out
     source = inspect.getsource(file_preview_module)
     assert exit_code == 0
+    assert "[Файл] brief.md: extracted" in output
+    assert "extracted_chars:" in output
+    assert "preview:" in output
     assert "Файл для preview" in output
     assert "fake:final_composer" in output
     assert "NoDriver" not in source
