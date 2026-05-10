@@ -135,7 +135,8 @@ def test_fill_prompt_failure_keeps_insert_diagnostics() -> None:
     assert exc.value.details["activeElement"]["id"] == "prompt-textarea"
     assert exc.value.details["outerHTML"].startswith("<div")
     assert exc.value.details["dom_probe_summary"]["candidate_count"] == 13
-    assert len(tab.scripts) == 2
+    assert len(tab.scripts) == 4
+    assert tab.scripts[0].startswith("\n/* PROMPT_INSERT */")
 
 
 def test_fill_prompt_result_must_be_object() -> None:

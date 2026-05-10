@@ -38,6 +38,8 @@ class TeamJob:
     run_id: str | None = None
     final_text: str | None = None
     workspace_path: Path | None = None
+    current_agent: str | None = None
+    current_stage: str | None = None
     error_message: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     started_at: datetime | None = None
@@ -52,6 +54,8 @@ class TeamJob:
             run_id=self.run_id,
             final_text=self.final_text,
             workspace_path=self.workspace_path,
+            current_agent=self.current_agent,
+            current_stage=self.current_stage,
             error_message=self.error_message,
             created_at=self.created_at,
             started_at=self.started_at,
@@ -68,6 +72,8 @@ class TeamJobSnapshot:
     run_id: str | None = None
     final_text: str | None = None
     workspace_path: Path | None = None
+    current_agent: str | None = None
+    current_stage: str | None = None
     error_message: str | None = None
     created_at: datetime | None = None
     started_at: datetime | None = None
@@ -132,6 +138,28 @@ class TeamJobManager:
     def snapshot(self, session_id: str) -> TeamJobSnapshot | None:
         job = self.active_jobs.get(session_id) or self.last_jobs.get(session_id)
         return job.snapshot() if job is not None else None
+
+    def update_active(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        workspace_path: Path | str | None = None,
+        current_agent: str | None = None,
+        current_stage: str | None = None,
+    ) -> TeamJobSnapshot | None:
+        job = self.active_jobs.get(session_id)
+        if job is None:
+            return None
+        if run_id:
+            job.run_id = run_id
+        if workspace_path:
+            job.workspace_path = Path(workspace_path)
+        if current_agent:
+            job.current_agent = current_agent
+        if current_stage:
+            job.current_stage = current_stage
+        return job.snapshot()
 
     def last_completed(self, session_id: str) -> TeamJobSnapshot | None:
         job = self.last_completed_jobs.get(session_id)

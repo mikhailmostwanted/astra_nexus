@@ -52,6 +52,23 @@ class ResponseWaitState(StrEnum):
 
 
 @dataclass(frozen=True)
+class ResponseTurnBaseline:
+    assistant_count_before: int
+    user_count_before: int = 0
+    last_user_message_id: str | None = None
+    last_user_message_index: int | None = None
+
+    @classmethod
+    def from_snapshot(cls, snapshot: ResponseWaitSnapshot) -> ResponseTurnBaseline:
+        return cls(
+            assistant_count_before=len(snapshot.assistant_messages),
+            user_count_before=snapshot.user_messages_count,
+            last_user_message_id=snapshot.last_user_message_id,
+            last_user_message_index=snapshot.last_user_message_index,
+        )
+
+
+@dataclass(frozen=True)
 class ResponseWaitSnapshot:
     assistant_messages: list[str]
     is_generating: bool
@@ -62,6 +79,31 @@ class ResponseWaitSnapshot:
     continue_required: bool = False
     detected_model: str | None = None
     detected_reasoning_mode: str | None = None
+    assistant_message_ids: list[str] = field(default_factory=list)
+    assistant_message_indexes: list[int] = field(default_factory=list)
+    user_messages_count: int = 0
+    last_user_message_id: str | None = None
+    last_user_message_index: int | None = None
+    current_turn_id: str | None = None
+    stop_button_count: int = 0
+    send_button_state: str = "unknown"
+    composer_disabled: bool = False
+    composer_editable: bool = False
+    aria_busy: bool = False
+    streaming_indicators_count: int = 0
+    thinking_indicators_count: int = 0
+
+    @property
+    def latest_assistant_text(self) -> str:
+        return self.assistant_messages[-1] if self.assistant_messages else ""
+
+    @property
+    def latest_assistant_text_chars(self) -> int:
+        return len(self.latest_assistant_text)
+
+    @property
+    def latest_assistant_text_preview(self) -> str:
+        return _compact_preview(self.latest_assistant_text, limit=180)
 
     @property
     def final_idle(self) -> bool:
@@ -160,7 +202,10 @@ class ChatGPTClient:
                 reason=login_state.get("reason"),
             )
 
-        before_count = len(await self._assistant_messages(tab))
+        turn_baseline = ResponseTurnBaseline.from_snapshot(
+            await self._safe_response_wait_snapshot(tab)
+        )
+        before_count = turn_baseline.assistant_count_before
         await self._ensure_preferred_model(tab, debug_context)
         self._log_stage("chatgpt.prompt_box.search.started", debug_context)
         await self._wait_for_prompt_box(tab, debug_context, login_state)
@@ -183,6 +228,7 @@ class ChatGPTClient:
         wait_result = await self._wait_for_response_completion(
             tab,
             response_count_before=before_count,
+            turn_baseline=turn_baseline,
             debug_context=debug_context,
         )
         self._log_stage("chatgpt.response.wait.ok", debug_context)
@@ -342,10 +388,27 @@ class ChatGPTClient:
         await asyncio.sleep(min(0.5, remaining))
 
     async def _fill_prompt(self, tab: Any, prompt: str) -> dict[str, Any]:
-        details = await self._insert_prompt_with_js(tab, prompt)
-        if details.get("ok"):
-            return details
+        failed_attempts: list[dict[str, Any]] = []
+        details: dict[str, Any] = {}
+        for attempt_number in range(1, 4):
+            details = await self._insert_prompt_with_js(tab, prompt)
+            details["prompt_insert_attempt_number"] = attempt_number
+            if details.get("ok"):
+                return details
+            failed_attempts.append(details)
+            if attempt_number < 3:
+                await asyncio.sleep(0.5)
+        details = next(
+            (
+                attempt
+                for attempt in reversed(failed_attempts)
+                if attempt.get("error")
+                not in {"prompt_insert_result_not_object", "prompt_insert_result_missing_ok"}
+            ),
+            failed_attempts[-1] if failed_attempts else details,
+        )
         details = await self._prompt_insert_failure_details(tab, details)
+        details["prompt_insert_failed_attempts"] = failed_attempts
         raise NoDriverPromptInsertFailedError(
             "Не удалось вставить prompt в поле ввода ChatGPT.",
             stage="chatgpt.prompt.insert.started",
@@ -383,6 +446,13 @@ class ChatGPTClient:
             return {
                 "ok": False,
                 "error": "prompt_insert_result_not_object",
+                "raw_result": result,
+                "selector": ", ".join(PROMPT_INPUT_SELECTORS),
+            }
+        if "ok" not in result:
+            return {
+                "ok": False,
+                "error": "prompt_insert_result_missing_ok",
                 "raw_result": result,
                 "selector": ", ".join(PROMPT_INPUT_SELECTORS),
             }
@@ -593,15 +663,45 @@ class ChatGPTClient:
     }};
   }}
 
-  const found = selectors
-    .map((selector) => {{
+  function candidateRank(node) {{
+    const tagName = (node.tagName || '').toLowerCase();
+    const role = node.getAttribute('role') || '';
+    const className = String(node.className || '').toLowerCase();
+    const name = String(node.getAttribute('name') || '').toLowerCase();
+    if (node.isContentEditable) {{
+      return 0;
+    }}
+    if (role === 'textbox' && tagName !== 'textarea') {{
+      return 1;
+    }}
+    if (tagName === 'textarea' && !className.includes('fallback') && !name.includes('fallback')) {{
+      return 2;
+    }}
+    if (tagName === 'input') {{
+      return 3;
+    }}
+    if (role === 'textbox') {{
+      return 4;
+    }}
+    return className.includes('fallback') || name.includes('fallback') ? 50 : 5;
+  }}
+
+  const activeElement = document.activeElement
+    ? [{{ selector: 'document.activeElement', node: document.activeElement }}]
+    : [];
+  const selectorCandidates = selectors
+    .flatMap((selector) => {{
       try {{
-        return {{ selector, node: document.querySelector(selector) }};
+        return Array.from(document.querySelectorAll(selector))
+          .map((node) => {{ return {{ selector, node }}; }});
       }} catch (_error) {{
-        return null;
+        return [];
       }}
-    }})
-    .find((entry) => entry && entry.node && visible(entry.node));
+    }});
+  const found = activeElement
+    .concat(selectorCandidates)
+    .filter((entry) => entry && entry.node && visible(entry.node))
+    .sort((left, right) => candidateRank(left.node) - candidateRank(right.node))[0];
   const target = found ? found.node : null;
   const matchedSelector = found ? found.selector : selectors.join(', ');
 
@@ -714,8 +814,12 @@ class ChatGPTClient:
         tab: Any,
         *,
         response_count_before: int,
+        turn_baseline: ResponseTurnBaseline | None = None,
         debug_context: dict[str, Any],
     ) -> ResponseWaitResult:
+        turn_baseline = turn_baseline or ResponseTurnBaseline(
+            assistant_count_before=response_count_before
+        )
         loop = asyncio.get_running_loop()
         started_at = loop.time()
         hard_timeout = float(self.settings.nodriver_response_timeout_seconds)
@@ -740,21 +844,32 @@ class ChatGPTClient:
             reason: str | None = None,
         ) -> None:
             elapsed = round(loop.time() - started_at, 3)
-            segments = self._new_assistant_segments(
-                snapshot.assistant_messages,
-                response_count_before=response_count_before,
+            segments = self._assistant_segments_for_current_turn(
+                snapshot,
+                turn_baseline=turn_baseline,
             )
             entry = {
                 "state": state.value,
                 "elapsed_seconds": elapsed,
                 "response_count": len(snapshot.assistant_messages),
+                "response_count_before": turn_baseline.assistant_count_before,
                 "assistant_segments_count": len(segments),
                 "is_generating": snapshot.is_generating,
                 "stop_button_visible": snapshot.stop_button_visible,
+                "stop_button_count": snapshot.stop_button_count,
                 "prompt_available": snapshot.prompt_available,
                 "send_button_idle": snapshot.send_button_idle,
+                "send_button_state": snapshot.send_button_state,
+                "composer_disabled": snapshot.composer_disabled,
+                "composer_editable": snapshot.composer_editable,
+                "aria_busy": snapshot.aria_busy,
+                "streaming_indicators_count": snapshot.streaming_indicators_count,
+                "thinking_indicators_count": snapshot.thinking_indicators_count,
                 "visible_indicators": list(snapshot.visible_indicators),
                 "continue_required": snapshot.continue_required,
+                "current_turn_id": snapshot.current_turn_id,
+                "latest_assistant_text_chars": snapshot.latest_assistant_text_chars,
+                "latest_assistant_text_preview": snapshot.latest_assistant_text_preview,
             }
             if reason:
                 entry["reason"] = reason
@@ -763,9 +878,9 @@ class ChatGPTClient:
         try:
             while True:
                 snapshot = await self._response_wait_snapshot(tab)
-                segments = self._new_assistant_segments(
-                    snapshot.assistant_messages,
-                    response_count_before=response_count_before,
+                segments = self._assistant_segments_for_current_turn(
+                    snapshot,
+                    turn_baseline=turn_baseline,
                 )
                 now = loop.time()
 
@@ -773,6 +888,7 @@ class ChatGPTClient:
                     await record(ResponseWaitState.FAILED, snapshot, reason="hard_timeout")
                     details = self._response_wait_debug_payload(
                         response_count_before=response_count_before,
+                        turn_baseline=turn_baseline,
                         snapshot=snapshot,
                         segments=segments,
                         timeline=timeline,
@@ -797,6 +913,7 @@ class ChatGPTClient:
                     await record(ResponseWaitState.FAILED, snapshot, reason="empty_wait_timeout")
                     details = self._response_wait_debug_payload(
                         response_count_before=response_count_before,
+                        turn_baseline=turn_baseline,
                         snapshot=snapshot,
                         segments=segments,
                         timeline=timeline,
@@ -815,13 +932,27 @@ class ChatGPTClient:
                 state = self._response_wait_state(snapshot, segments=segments)
                 await record(state, snapshot)
                 if progress_log_interval > 0 and now >= next_progress_log_at:
-                    self._log_stage(
-                        "chatgpt.response.wait.progress",
-                        debug_context,
-                        wait_state=state.value,
-                        assistant_segments_count=len(segments),
+                    progress_payload = self._response_wait_progress_payload(
+                        debug_context=debug_context,
+                        turn_baseline=turn_baseline,
+                        snapshot=snapshot,
+                        segments=segments,
+                        state=state,
                         elapsed_seconds=round(now - started_at, 3),
-                        generating=snapshot.is_generating,
+                        response_timeout_seconds=hard_timeout,
+                    )
+                    self._log_response_wait_progress(progress_payload)
+                    self._write_response_wait_debug(
+                        debug_context,
+                        self._response_wait_debug_payload(
+                            response_count_before=response_count_before,
+                            turn_baseline=turn_baseline,
+                            snapshot=snapshot,
+                            segments=segments,
+                            timeline=timeline,
+                            final_idle_detected=False,
+                            detected_phase=progress_payload["detected_phase"],
+                        ),
                     )
                     next_progress_log_at = now + progress_log_interval
 
@@ -842,7 +973,18 @@ class ChatGPTClient:
                             detected_model=snapshot.detected_model,
                             detected_reasoning_mode=snapshot.detected_reasoning_mode,
                         )
-                        self._write_response_wait_debug(debug_context, result.debug_payload)
+                        self._write_response_wait_debug(
+                            debug_context,
+                            self._response_wait_debug_payload(
+                                response_count_before=response_count_before,
+                                turn_baseline=turn_baseline,
+                                snapshot=snapshot,
+                                segments=segments,
+                                timeline=timeline,
+                                final_idle_detected=True,
+                                detected_phase="idle_with_answer",
+                            ),
+                        )
                         return result
                 else:
                     idle_started_at = None
@@ -856,10 +998,11 @@ class ChatGPTClient:
                 await record(ResponseWaitState.CANCELLED, cancelled_snapshot, reason="cancelled")
                 details = self._response_wait_debug_payload(
                     response_count_before=response_count_before,
+                    turn_baseline=turn_baseline,
                     snapshot=cancelled_snapshot,
-                    segments=self._new_assistant_segments(
-                        cancelled_snapshot.assistant_messages,
-                        response_count_before=response_count_before,
+                    segments=self._assistant_segments_for_current_turn(
+                        cancelled_snapshot,
+                        turn_baseline=turn_baseline,
                     ),
                     timeline=timeline,
                     final_idle_detected=False,
@@ -867,6 +1010,110 @@ class ChatGPTClient:
                 )
                 self._write_response_wait_debug(debug_context, details)
             raise
+
+    def _log_response_wait_progress(self, payload: dict[str, Any]) -> None:
+        logger.info(
+            "chatgpt.response.wait.progress %s",
+            json.dumps(payload, ensure_ascii=False, default=str),
+            extra={
+                "task_id": payload.get("task_id"),
+                "run_id": payload.get("run_id"),
+                "agent_id": payload.get("agent_id"),
+                "stage": "chatgpt.response.wait.progress",
+                **payload,
+            },
+        )
+
+    def _response_wait_progress_payload(
+        self,
+        *,
+        debug_context: dict[str, Any],
+        turn_baseline: ResponseTurnBaseline,
+        snapshot: ResponseWaitSnapshot,
+        segments: list[str],
+        state: ResponseWaitState,
+        elapsed_seconds: float,
+        response_timeout_seconds: float,
+    ) -> dict[str, Any]:
+        return {
+            "task_id": debug_context.get("task_id"),
+            "run_id": debug_context.get("run_id"),
+            "agent_id": debug_context.get("agent_id"),
+            "step_id": debug_context.get("step_id"),
+            "current_turn_id": snapshot.current_turn_id,
+            "before_count": turn_baseline.assistant_count_before,
+            "assistant_count_after_send": len(snapshot.assistant_messages),
+            "latest_assistant_text_chars": snapshot.latest_assistant_text_chars,
+            "latest_assistant_text_preview": snapshot.latest_assistant_text_preview,
+            "stop_button_count": snapshot.stop_button_count,
+            "send_button_state": snapshot.send_button_state,
+            "composer_disabled": snapshot.composer_disabled,
+            "composer_editable": snapshot.composer_editable,
+            "aria_busy": snapshot.aria_busy,
+            "streaming_indicators_count": snapshot.streaming_indicators_count,
+            "thinking_indicators_count": snapshot.thinking_indicators_count,
+            "detected_phase": self._detected_response_phase(
+                snapshot,
+                segments=segments,
+                state=state,
+            ),
+            "elapsed_seconds": elapsed_seconds,
+            "response_timeout_seconds": response_timeout_seconds,
+        }
+
+    def _detected_response_phase(
+        self,
+        snapshot: ResponseWaitSnapshot,
+        *,
+        segments: list[str],
+        state: ResponseWaitState,
+    ) -> str:
+        if not segments:
+            if snapshot.final_idle and snapshot.user_messages_count > 0:
+                return "stuck_unknown"
+            if snapshot.thinking_indicators_count:
+                return "thinking"
+            if snapshot.is_generating or snapshot.stop_button_visible:
+                return "waiting_for_first_segment"
+            return "waiting_for_first_segment"
+        if snapshot.thinking_indicators_count:
+            return "thinking"
+        if (
+            snapshot.is_generating
+            or snapshot.stop_button_visible
+            or snapshot.streaming_indicators_count
+            or state == ResponseWaitState.THINKING_OR_STREAMING
+        ):
+            return "streaming"
+        if snapshot.final_idle:
+            return "idle_with_answer"
+        return "stuck_unknown"
+
+    def _assistant_segments_for_current_turn(
+        self,
+        snapshot: ResponseWaitSnapshot,
+        *,
+        turn_baseline: ResponseTurnBaseline,
+    ) -> list[str]:
+        messages = snapshot.assistant_messages
+        indexes = snapshot.assistant_message_indexes
+        if (
+            snapshot.user_messages_count > turn_baseline.user_count_before
+            and snapshot.last_user_message_index is not None
+            and len(indexes) == len(messages)
+        ):
+            segments = [
+                message
+                for message, index in zip(messages, indexes, strict=False)
+                if index > int(snapshot.last_user_message_index)
+            ]
+        else:
+            segments = messages[turn_baseline.assistant_count_before :]
+        return [
+            segment
+            for segment in segments
+            if segment.strip() and not _is_thinking_label_only(segment)
+        ]
 
     def _response_wait_state(
         self,
@@ -909,6 +1156,28 @@ class ChatGPTClient:
             continue_required=bool(result.get("continueRequired")),
             detected_model=_str_or_none(result.get("detectedModel")),
             detected_reasoning_mode=_str_or_none(result.get("detectedReasoningMode")),
+            assistant_message_ids=[str(item) for item in result.get("assistantMessageIds") or []],
+            assistant_message_indexes=[
+                _int_or_default(item, index)
+                for index, item in enumerate(result.get("assistantMessageIndexes") or [])
+            ],
+            user_messages_count=_int_or_default(result.get("userMessagesCount"), 0),
+            last_user_message_id=_str_or_none(result.get("lastUserMessageId")),
+            last_user_message_index=_optional_int(result.get("lastUserMessageIndex")),
+            current_turn_id=_str_or_none(result.get("currentTurnId")),
+            stop_button_count=_int_or_default(result.get("stopButtonCount"), 0),
+            send_button_state=str(result.get("sendButtonState") or "unknown"),
+            composer_disabled=bool(result.get("composerDisabled")),
+            composer_editable=bool(result.get("composerEditable")),
+            aria_busy=bool(result.get("ariaBusy")),
+            streaming_indicators_count=_int_or_default(
+                result.get("streamingIndicatorsCount"),
+                0,
+            ),
+            thinking_indicators_count=_int_or_default(
+                result.get("thinkingIndicatorsCount"),
+                0,
+            ),
         )
 
     async def _safe_response_wait_snapshot(self, tab: Any) -> ResponseWaitSnapshot:
@@ -926,30 +1195,45 @@ class ChatGPTClient:
     async def _response_wait_sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
 
-    def _new_assistant_segments(
-        self,
-        messages: list[str],
-        *,
-        response_count_before: int,
-    ) -> list[str]:
-        return [message for message in messages[response_count_before:] if message.strip()]
-
     def _response_wait_debug_payload(
         self,
         *,
         response_count_before: int,
+        turn_baseline: ResponseTurnBaseline | None = None,
         snapshot: ResponseWaitSnapshot,
         segments: list[str],
         timeline: list[dict[str, Any]],
         final_idle_detected: bool,
         timeout_reason: str | None = None,
+        detected_phase: str | None = None,
     ) -> dict[str, Any]:
+        turn_baseline = turn_baseline or ResponseTurnBaseline(
+            assistant_count_before=response_count_before
+        )
         payload: dict[str, Any] = {
             "response_count_before": response_count_before,
             "response_count_after": len(snapshot.assistant_messages),
+            "user_count_before": turn_baseline.user_count_before,
+            "user_count_after": snapshot.user_messages_count,
+            "current_turn_id": snapshot.current_turn_id,
             "assistant_segments_count": len(segments),
             "assistant_segments_lengths": [len(segment) for segment in segments],
+            "assistant_segments": segments,
+            "combined_assistant_transcript": "\n\n".join(segments),
             "final_segment_index": len(segments) - 1 if segments else None,
+            "latest_assistant_text_chars": snapshot.latest_assistant_text_chars,
+            "latest_assistant_text_preview": snapshot.latest_assistant_text_preview,
+            "last_snapshot": {
+                "stop_button_count": snapshot.stop_button_count,
+                "send_button_state": snapshot.send_button_state,
+                "composer_disabled": snapshot.composer_disabled,
+                "composer_editable": snapshot.composer_editable,
+                "aria_busy": snapshot.aria_busy,
+                "streaming_indicators_count": snapshot.streaming_indicators_count,
+                "thinking_indicators_count": snapshot.thinking_indicators_count,
+                "visible_indicators": list(snapshot.visible_indicators),
+                "continue_required": snapshot.continue_required,
+            },
             "wait_state_timeline": timeline,
             "final_idle_detected": final_idle_detected,
             "detected_model": snapshot.detected_model,
@@ -957,6 +1241,8 @@ class ChatGPTClient:
         }
         if timeout_reason:
             payload["timeout_reason"] = timeout_reason
+        if detected_phase:
+            payload["detected_phase"] = detected_phase
         return payload
 
     def _write_response_wait_debug(
@@ -966,6 +1252,7 @@ class ChatGPTClient:
     ) -> None:
         workspace_path = debug_context.get("workspace_path")
         agent_id = str(debug_context.get("agent_id") or "manual")
+        step_id = str(debug_context.get("step_id") or "")
         debug_dir = (
             Path(workspace_path) / "debug"
             if workspace_path is not None
@@ -973,15 +1260,21 @@ class ChatGPTClient:
         )
         try:
             debug_dir.mkdir(parents=True, exist_ok=True)
-            safe_agent_id = "".join(
+            filename_stem = f"{agent_id}_{step_id}" if step_id else agent_id
+            safe_filename_stem = "".join(
                 character if character.isalnum() or character in {"_", "-"} else "_"
-                for character in agent_id
+                for character in filename_stem
             )
-            path = debug_dir / f"nodriver_response_wait_{safe_agent_id}.json"
+            path = debug_dir / f"nodriver_response_wait_{safe_filename_stem}.json"
             path.write_text(
                 json.dumps(
                     {
                         "timestamp": datetime.now(UTC).isoformat(),
+                        "task_id": debug_context.get("task_id"),
+                        "run_id": debug_context.get("run_id"),
+                        "agent_id": debug_context.get("agent_id"),
+                        "step_id": debug_context.get("step_id"),
+                        "agent_task_id": debug_context.get("agent_task_id"),
                         **payload,
                     },
                     ensure_ascii=False,
@@ -997,13 +1290,15 @@ class ChatGPTClient:
     def _build_response_wait_probe_script(self) -> str:
         assistant_query = ASSISTANT_MESSAGE_QUERY
         prompt_selectors_json = json.dumps(PROMPT_INPUT_SELECTORS, ensure_ascii=False)
+        send_selectors_json = json.dumps(SEND_BUTTON_SELECTORS, ensure_ascii=False)
         stop_selectors_json = json.dumps(STOP_BUTTON_SELECTORS, ensure_ascii=False)
         return f"""
 /* RESPONSE_WAIT_PROBE */
 (() => {{
   const promptSelectors = {prompt_selectors_json};
+  const sendSelectors = {send_selectors_json};
   const stopSelectors = {stop_selectors_json};
-  const assistantMessages = ({assistant_query});
+  const fallbackAssistantMessages = ({assistant_query});
 
   function visible(node) {{
     if (!node) return false;
@@ -1021,6 +1316,92 @@ class ChatGPTClient:
       }} catch (_error) {{}}
     }}
     return null;
+  }}
+
+  function visibleAll(selectors) {{
+    const nodes = [];
+    for (const selector of selectors) {{
+      try {{
+        for (const node of document.querySelectorAll(selector)) {{
+          if (visible(node)) nodes.push(node);
+        }}
+      }} catch (_error) {{}}
+    }}
+    return nodes;
+  }}
+
+  function textOf(node) {{
+    return (node && (node.innerText || node.textContent || '') || '').trim();
+  }}
+
+  function cleanMessageText(node, role) {{
+    if (!node) return '';
+    const clone = node.cloneNode(true);
+    for (const removable of clone.querySelectorAll('script, style, .sr-only')) {{
+      removable.remove();
+    }}
+    if (role === 'assistant') {{
+      for (const button of clone.querySelectorAll('button')) {{
+        const text = textOf(button).toLowerCase();
+        if (text.startsWith('thought for ') || text === 'thinking' || text === 'думаю') {{
+          button.remove();
+        }}
+      }}
+      for (const thinking of clone.querySelectorAll('.result-thinking')) {{
+        const text = textOf(thinking).toLowerCase();
+        if (!text || text.startsWith('thought for ') || text === 'думаю') {{
+          thinking.remove();
+        }}
+      }}
+    }}
+    return textOf(clone);
+  }}
+
+  function stableId(node, index) {{
+    return node.getAttribute('data-turn-id') ||
+      node.getAttribute('data-turn-id-container') ||
+      node.getAttribute('data-message-id') ||
+      node.getAttribute('data-testid') ||
+      node.id ||
+      `${{node.getAttribute('data-message-author-role') ||
+        node.getAttribute('data-turn') ||
+        'message'}}:${{index}}`;
+  }}
+
+  function messageItems() {{
+    let nodes = Array.from(
+      document.querySelectorAll('[data-turn="user"], [data-turn="assistant"]')
+    );
+    const usesTurnContainers = nodes.length > 0;
+    if (!nodes.length) {{
+      nodes = Array.from(document.querySelectorAll('[data-message-author-role]'));
+    }}
+    const hasExplicitRoles = nodes.length > 0;
+    if (!nodes.length) {{
+      nodes = Array.from(document.querySelectorAll('article'));
+    }}
+    if (!nodes.length) {{
+      return (fallbackAssistantMessages || []).map((text, index) => ({{
+        id: `assistant-fallback:${{index}}`,
+        role: 'assistant',
+        text,
+        index,
+      }}));
+    }}
+    return nodes
+      .map((node, index) => {{
+        const explicitRole = node.getAttribute('data-turn') ||
+          node.getAttribute('data-message-author-role');
+        const role = explicitRole ||
+          (hasExplicitRoles ? '' : 'assistant');
+        return {{
+          id: stableId(node, index),
+          role,
+          text: cleanMessageText(node, role),
+          index,
+        }};
+      }})
+      .filter((item) => item.text || (usesTurnContainers && item.role === 'assistant'));
   }}
 
   function nodeLabel(node) {{
@@ -1044,7 +1425,17 @@ class ChatGPTClient:
     return null;
   }}
 
-  const stopButton = firstVisible(stopSelectors);
+  const messages = messageItems();
+  const assistantItems = messages.filter((item) => item.role === 'assistant');
+  const userItems = messages.filter((item) => item.role === 'user');
+  const assistantMessages = assistantItems.map((item) => item.text);
+  const assistantMessageIds = assistantItems.map((item) => item.id);
+  const assistantMessageIndexes = assistantItems.map((item) => item.index);
+  const lastUser = userItems.length ? userItems[userItems.length - 1] : null;
+  const stopButtons = visibleAll(stopSelectors);
+  const stopButton = stopButtons[0] || null;
+  const sendButtons = visibleAll(sendSelectors);
+  const sendButton = sendButtons[0] || null;
   const prompt = firstVisible(promptSelectors);
   const bodyText = document.body ? document.body.innerText.toLowerCase() : '';
   const indicatorSelectors = [
@@ -1057,12 +1448,20 @@ class ChatGPTClient:
     '[class*="spinner"]',
   ];
   const visibleIndicators = [];
+  let streamingIndicatorsCount = 0;
+  let thinkingIndicatorsCount = 0;
   for (const selector of indicatorSelectors) {{
     try {{
       for (const node of document.querySelectorAll(selector)) {{
         if (!visible(node)) continue;
         const name = indicatorName(node);
-        if (name && !visibleIndicators.includes(name)) visibleIndicators.push(name);
+        if (!name) continue;
+        if (!visibleIndicators.includes(name)) visibleIndicators.push(name);
+        if (name === 'thinking') {{
+          thinkingIndicatorsCount += 1;
+        }} else {{
+          streamingIndicatorsCount += 1;
+        }}
       }}
     }} catch (_error) {{}}
   }}
@@ -1074,10 +1473,31 @@ class ChatGPTClient:
     actionTexts.some((text) => text.includes('continue generating')) ||
     actionTexts.some((text) => text === 'resume' || text.includes('resume generation')) ||
     actionTexts.some((text) => text === 'try again' || text.includes('regenerate'));
+  const composerDisabled = Boolean(prompt) && (
+    prompt.disabled ||
+    prompt.readOnly ||
+    prompt.getAttribute('aria-disabled') === 'true'
+  );
+  const composerEditable = Boolean(prompt) && (
+    prompt.isContentEditable ||
+    prompt.tagName === 'TEXTAREA' ||
+    prompt.tagName === 'INPUT' ||
+    prompt.getAttribute('role') === 'textbox'
+  ) && !composerDisabled;
+  const ariaBusy = Array.from(document.querySelectorAll('[aria-busy="true"]')).some(visible);
+  const sendButtonDisabled = Boolean(sendButton) && (
+    sendButton.disabled ||
+    sendButton.getAttribute('aria-disabled') === 'true'
+  );
+  const sendButtonState = stopButton ? 'stop_visible' :
+    sendButton ? (sendButtonDisabled ? 'send_disabled' : 'send_enabled') :
+    (prompt ? 'send_hidden' : 'missing');
   const sendButtonIdle = Boolean(prompt) &&
     !stopButton &&
+    !ariaBusy &&
     visibleIndicators.length === 0 &&
-    !continueRequired;
+    !continueRequired &&
+    composerEditable;
   const modelButtons = Array.from(document.querySelectorAll('button, [role="button"]'))
     .map((node) => (node.innerText || node.getAttribute('aria-label') || '').trim())
     .filter(Boolean);
@@ -1085,10 +1505,23 @@ class ChatGPTClient:
 
   return {{
     assistantMessages,
+    assistantMessageIds,
+    assistantMessageIndexes,
+    userMessagesCount: userItems.length,
+    lastUserMessageId: lastUser ? lastUser.id : null,
+    lastUserMessageIndex: lastUser ? lastUser.index : null,
+    currentTurnId: lastUser ? lastUser.id : null,
     stopButtonVisible: Boolean(stopButton),
-    isGenerating: Boolean(stopButton) || visibleIndicators.length > 0,
+    stopButtonCount: stopButtons.length,
+    isGenerating: Boolean(stopButton) || ariaBusy || visibleIndicators.length > 0,
     promptAvailable: Boolean(prompt),
     sendButtonIdle,
+    sendButtonState,
+    composerDisabled,
+    composerEditable,
+    ariaBusy,
+    streamingIndicatorsCount,
+    thinkingIndicatorsCount,
     visibleIndicators,
     continueRequired,
     detectedModel,
@@ -1256,6 +1689,36 @@ def _str_or_none(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_or_default(value: object, default: int) -> int:
+    parsed = _optional_int(value)
+    return default if parsed is None else parsed
+
+
+def _compact_preview(text: str, *, limit: int) -> str:
+    compact = " ".join(str(text or "").split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 1].rstrip()}..."
+
+
+def _is_thinking_label_only(text: str) -> bool:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return True
+    if normalized in {"thinking", "думаю", "думает"}:
+        return True
+    return normalized.startswith("thought for ") and len(normalized) <= 80
 
 
 def _model_name_matches(detected: str, preferred: str) -> bool:

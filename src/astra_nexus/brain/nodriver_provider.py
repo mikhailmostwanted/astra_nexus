@@ -93,6 +93,8 @@ class NoDriverProvider(BrainProvider):
         )
 
     def _build_prompt(self, agent_id: str, prompt: str, context: dict[str, Any]) -> str:
+        if context.get("direct_prompt"):
+            return prompt
         previous_messages = context.get("previous_messages", [])
         task_prompt = context.get("task_prompt", "")
         return (
@@ -113,6 +115,9 @@ class NoDriverProvider(BrainProvider):
             "task_id": task_id,
             "run_id": context.get("run_id"),
             "agent_id": agent_id,
+            "step_id": context.get("step_id"),
+            "agent_task_id": context.get("agent_task_id"),
+            "attempt_number": context.get("attempt_number"),
             "provider": self.name,
             "workspace_path": workspace_path,
         }
@@ -135,6 +140,8 @@ class NoDriverProvider(BrainProvider):
             "task_id": task_id,
             "run_id": run_id,
             "agent_id": debug_context.get("agent_id"),
+            "step_id": debug_context.get("step_id"),
+            "agent_task_id": debug_context.get("agent_task_id"),
             "stage": exc.stage,
             "provider": self.name,
             "error_code": exc.error_code,
@@ -200,6 +207,7 @@ class NoDriverProvider(BrainProvider):
                 "task_id": debug_context.get("task_id"),
                 "run_id": debug_context.get("run_id"),
                 "agent_id": debug_context.get("agent_id"),
+                "step_id": debug_context.get("step_id"),
                 "stage": stage,
                 "provider": self.name,
             },

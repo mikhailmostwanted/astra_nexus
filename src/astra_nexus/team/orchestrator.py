@@ -449,6 +449,9 @@ class AsyncTeamOrchestrator:
                     profile=profile,
                     previous_results=previous_results,
                 )
+                prompt.metadata["execution_step_id"] = execution_step_id
+                prompt.metadata["agent_task_id"] = agent_task.id
+                prompt.metadata["attempt_number"] = attempt_number
             except Exception as exc:
                 provider_error = TeamProviderError(
                     "ошибка подготовки prompt для агента",

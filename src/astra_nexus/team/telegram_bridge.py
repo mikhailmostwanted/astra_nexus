@@ -193,9 +193,17 @@ class TelegramTeamMessageSink(TeamMessageSink):
         self.current_intent: str | None = None
         self.outbox: list[TelegramOutgoingMessage] = []
         self.auto_sender: Callable[[TelegramOutgoingMessage], None] | None = None
+        self.job_update_callback: Callable[[TelegramTeamMessageSink, TeamMessage], None] | None = (
+            None
+        )
         self._main_dedupe_keys: set[tuple[str, str, str, str, str]] = set()
 
     def publish(self, message: TeamMessage) -> None:
+        if self.job_update_callback is not None:
+            try:
+                self.job_update_callback(self, message)
+            except Exception:
+                logger.warning("Could not update Telegram team job state", exc_info=True)
         if message.channel in {TeamMessageChannel.LOG_CHAT, TeamMessageChannel.DEBUG}:
             if self.log_chat_id is None:
                 return
@@ -751,7 +759,49 @@ class TelegramTeamBridge:
     def _session(self, chat_id: int) -> TelegramTeamSession:
         session = self.registry.session(chat_id)
         session.sink.auto_sender = self._schedule_send
+        session.sink.job_update_callback = self._update_active_job_from_message
         return session
+
+    def _update_active_job_from_message(
+        self,
+        sink: TelegramTeamMessageSink,
+        message: TeamMessage,
+    ) -> None:
+        metadata = message.metadata
+        run_id = str(metadata.get("run_id") or message.run_id or "")
+        if not run_id:
+            return
+        session_id = str(metadata.get("session_id") or sink.session_id or sink.chat_id)
+        workspace_path = self._active_job_workspace_path(run_id=run_id, metadata=metadata)
+        event_type = str(metadata.get("event_type") or message.type.value)
+        current_agent = self._message_agent_role(message)
+        current_stage = str(metadata.get("execution_step_id") or event_type)
+        self.jobs.update_active(
+            session_id,
+            run_id=run_id,
+            workspace_path=workspace_path,
+            current_agent=current_agent,
+            current_stage=current_stage,
+        )
+
+    def _active_job_workspace_path(
+        self,
+        *,
+        run_id: str,
+        metadata: dict[str, Any],
+    ) -> Path | None:
+        workspace = metadata.get("workspace")
+        if workspace and str(workspace).lower() not in {"none", "null"}:
+            return Path(str(workspace))
+        if run_id.startswith("team_run_"):
+            return self.config.workspace_root / run_id
+        return None
+
+    def _message_agent_role(self, message: TeamMessage) -> str | None:
+        if message.author_role is not None:
+            return message.author_role.value
+        role = message.metadata.get("agent_role") or message.metadata.get("role")
+        return str(role) if role else None
 
     def _schedule_send(self, message: TelegramOutgoingMessage) -> None:
         task = asyncio.create_task(self._send(message))
@@ -1136,19 +1186,22 @@ class TelegramTeamBridge:
         run = snapshot.run_id or "ещё не создан"
         workspace = snapshot.workspace_path or "нет"
         if snapshot.status in {TeamJobStatus.PENDING, TeamJobStatus.RUNNING}:
-            return "\n".join(
-                [
-                    "Активная задача: есть.",
-                    "Кто работает: команда.",
-                    f"job_id: {snapshot.job_id}",
-                    f"run_id: {run}",
-                    f"provider: {self.config.provider}",
-                    f"started_at: {_datetime_text(snapshot.started_at)}",
-                    f"status: {snapshot.status.value}",
-                    f"workspace: {workspace}",
-                    "Последний результат: пока нет.",
-                ]
-            )
+            lines = [
+                "Активная задача: есть.",
+                "Кто работает: команда.",
+                f"job_id: {snapshot.job_id}",
+                f"run_id: {run}",
+                f"provider: {self.config.provider}",
+                f"started_at: {_datetime_text(snapshot.started_at)}",
+                f"status: {snapshot.status.value}",
+                f"workspace: {workspace}",
+            ]
+            if snapshot.current_agent:
+                lines.append(f"current_agent: {snapshot.current_agent}")
+            if snapshot.current_stage:
+                lines.append(f"current_stage: {snapshot.current_stage}")
+            lines.append("Последний результат: пока нет.")
+            return "\n".join(lines)
         if snapshot.status == TeamJobStatus.COMPLETED:
             return "\n".join(
                 [

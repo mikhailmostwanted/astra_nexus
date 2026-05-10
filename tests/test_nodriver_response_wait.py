@@ -1,10 +1,12 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 
 from astra_nexus.brain.nodriver.chatgpt_client import (
     ChatGPTClient,
+    ResponseTurnBaseline,
     ResponseWaitSnapshot,
     ResponseWaitState,
 )
@@ -52,6 +54,9 @@ def snapshot(
     send_idle: bool = False,
     indicators: list[str] | None = None,
     continue_required: bool = False,
+    assistant_indexes: list[int] | None = None,
+    user_count: int = 0,
+    last_user_index: int | None = None,
 ) -> ResponseWaitSnapshot:
     return ResponseWaitSnapshot(
         assistant_messages=messages,
@@ -61,6 +66,9 @@ def snapshot(
         send_button_idle=send_idle,
         visible_indicators=indicators or [],
         continue_required=continue_required,
+        assistant_message_indexes=assistant_indexes or list(range(len(messages))),
+        user_messages_count=user_count,
+        last_user_message_index=last_user_index,
     )
 
 
@@ -106,6 +114,12 @@ def test_response_wait_returns_last_segment_only_after_final_idle(tmp_path: Path
     assert ResponseWaitState.INTERMEDIATE_RESPONSE_SEEN.value in states
     assert ResponseWaitState.WAITING_FOR_FINAL_IDLE.value in states
     assert states[-1] == ResponseWaitState.FINAL_RESPONSE_READY.value
+    debug_payload = json.loads(
+        (tmp_path / "debug" / "nodriver_response_wait_manual.json").read_text(encoding="utf-8")
+    )
+    assert debug_payload["assistant_segments"] == ["intermediate", "final answer"]
+    assert debug_payload["last_snapshot"]["send_button_state"] == "unknown"
+    assert debug_payload["detected_phase"] == "idle_with_answer"
 
 
 def test_response_wait_does_not_complete_from_stable_text_without_idle(tmp_path: Path) -> None:
@@ -138,6 +152,64 @@ def test_response_wait_does_not_complete_from_stable_text_without_idle(tmp_path:
 
     assert result.final_answer == "final"
     assert result.assistant_segments == ["partial", "final"]
+
+
+def test_response_wait_selects_segments_after_current_user_turn(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        nodriver_response_timeout_seconds=0,
+        nodriver_response_idle_confirm_seconds=0,
+    )
+    baseline = ResponseTurnBaseline(
+        assistant_count_before=1,
+        user_count_before=1,
+        last_user_message_index=0,
+    )
+    client = SequenceWaitClient(
+        settings=settings,
+        snapshots=[
+            snapshot(
+                ["old assistant", "old assistant completed after baseline", "final current turn"],
+                generating=False,
+                prompt_available=True,
+                send_idle=True,
+                assistant_indexes=[1, 2, 4],
+                user_count=2,
+                last_user_index=3,
+            ),
+        ],
+    )
+
+    result = asyncio.run(
+        client._wait_for_response_completion(
+            object(),
+            response_count_before=baseline.assistant_count_before,
+            turn_baseline=baseline,
+            debug_context={"workspace_path": tmp_path},
+        )
+    )
+
+    assert result.final_answer == "final current turn"
+    assert result.assistant_segments == ["final current turn"]
+
+
+def test_response_wait_progress_marks_idle_without_answer_as_stuck_unknown() -> None:
+    client = SequenceWaitClient(settings=Settings(_env_file=None), snapshots=[])
+    phase = client._detected_response_phase(
+        snapshot(
+            [],
+            generating=False,
+            prompt_available=True,
+            send_idle=True,
+            user_count=1,
+            last_user_index=0,
+        ),
+        segments=[],
+        state=ResponseWaitState.PROMPT_SUBMITTED,
+    )
+
+    assert phase == "stuck_unknown"
 
 
 def test_response_wait_hard_timeout_disabled_allows_long_generating_state(

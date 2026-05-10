@@ -38,6 +38,15 @@ class SlowClient:
         return "ok"
 
 
+class RecordingClient:
+    def __init__(self) -> None:
+        self.prompt = ""
+
+    async def ask(self, prompt: str, **_: object) -> str:
+        self.prompt = prompt
+        return "ok"
+
+
 def test_nodriver_provider_maps_login_required_error() -> None:
     provider = NoDriverProvider(
         settings=Settings(brain_provider="nodriver"),
@@ -178,3 +187,19 @@ def test_nodriver_provider_serializes_parallel_ask_calls() -> None:
     asyncio.run(run_two_calls())
 
     assert client.overlapped is False
+
+
+def test_nodriver_provider_supports_direct_prompt_context() -> None:
+    client = RecordingClient()
+    provider = NoDriverProvider(settings=Settings(brain_provider="nodriver"), client=client)
+
+    response = asyncio.run(
+        provider.ask(
+            agent_id="manual",
+            prompt="Ответь ровно так: Astra Nexus online.",
+            context={"direct_prompt": True},
+        )
+    )
+
+    assert response.content == "ok"
+    assert client.prompt == "Ответь ровно так: Astra Nexus online."

@@ -22,13 +22,19 @@ PROMPT_INPUT_SELECTORS = [
 
 SEND_BUTTON_SELECTORS = [
     'button[data-testid="send-button"]',
+    'button[data-testid="composer-submit-button"]',
     'button[aria-label="Send prompt"]',
     'button[aria-label="Send message"]',
+    'button[aria-label*="Send"]',
 ]
 
 STOP_BUTTON_SELECTORS = [
     'button[data-testid="stop-button"]',
+    'button[data-testid="composer-stop-button"]',
     'button[aria-label="Stop streaming"]',
+    'button[aria-label="Stop generating"]',
+    'button[aria-label*="Stop"]',
+    'button[aria-label*="Cancel"]',
 ]
 
 ASSISTANT_MESSAGE_QUERY = """

@@ -135,6 +135,9 @@ class NoDriverTeamProvider(TeamProvider):
                 len(previous_results),
             ),
             "workspace_path": metadata.get("workspace_path"),
+            "step_id": metadata.get("execution_step_id"),
+            "agent_task_id": metadata.get("agent_task_id"),
+            "attempt_number": metadata.get("attempt_number"),
         }
 
     def _content(self, response: BrainResponse | Any) -> str:

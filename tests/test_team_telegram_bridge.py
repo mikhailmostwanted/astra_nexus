@@ -258,6 +258,9 @@ def test_telegram_status_sees_active_job() -> None:
         assert "Активная задача" in bot.messages[-1].text
         assert "provider: fake" in bot.messages[-1].text
         assert "started_at:" in bot.messages[-1].text
+        assert "run_id: team_run_" in bot.messages[-1].text
+        assert "ещё не создан" not in bot.messages[-1].text
+        assert "current_agent: coordinator" in bot.messages[-1].text
 
         provider.release.set()
         await bridge.jobs.wait("100")

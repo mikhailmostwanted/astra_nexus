@@ -33,7 +33,7 @@ async def run(argv: list[str] | None = None, *, provider: Any | None = None) -> 
         response = await provider.ask(
             agent_id="manual",
             prompt=prompt,
-            context={"task_prompt": prompt},
+            context={"task_prompt": prompt, "direct_prompt": True},
         )
     except NoDriverProviderError as exc:
         error = exc
