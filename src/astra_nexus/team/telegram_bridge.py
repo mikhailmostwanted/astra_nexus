@@ -32,6 +32,7 @@ from astra_nexus.team.jobs import (
     TeamJobStatus,
 )
 from astra_nexus.team.messages import TeamMessage, TeamMessageChannel, TeamMessageSink
+from astra_nexus.team.models import AgentRole
 from astra_nexus.team.provider import TeamProvider
 from astra_nexus.team.run_registry import TeamRunRegistry, TeamRunRegistryEntry
 from astra_nexus.team.runtime import (
@@ -65,10 +66,15 @@ class TelegramTeamBridgeConfig:
     send_typing: bool = True
     human_messages: bool = True
     atmosphere: AtmosphereProfile = field(default_factory=AtmosphereProfile)
+    atmosphere_mode: str = "template"
+    atmosphere_snippet_max_chars: int = 220
 
     @classmethod
     def from_settings(cls, settings: Settings) -> TelegramTeamBridgeConfig:
         max_file_size_mb = max(1, settings.team_telegram_max_file_size_mb)
+        atmosphere_mode = settings.team_atmosphere_mode
+        if settings.team_telegram_provider == "nodriver" and atmosphere_mode == "template":
+            atmosphere_mode = "minimal"
         return cls(
             provider=settings.team_telegram_provider,
             workspace_root=settings.team_runs_dir,
@@ -86,6 +92,8 @@ class TelegramTeamBridgeConfig:
             send_typing=settings.team_telegram_send_typing,
             human_messages=settings.team_telegram_human_messages,
             atmosphere=AtmosphereProfile.from_settings(settings),
+            atmosphere_mode=atmosphere_mode,
+            atmosphere_snippet_max_chars=settings.team_atmosphere_snippet_max_chars,
         )
 
 
@@ -172,6 +180,7 @@ class TelegramTeamMessageSink(TeamMessageSink):
         session_id: str | None = None,
         provider: str | None = None,
         execution_mode: str | None = None,
+        atmosphere_mode: str = "template",
     ) -> None:
         self.chat_id = chat_id
         self.log_chat_id = log_chat_id
@@ -179,10 +188,12 @@ class TelegramTeamMessageSink(TeamMessageSink):
         self.session_id = session_id
         self.provider = provider
         self.execution_mode = execution_mode
+        self.atmosphere_mode = atmosphere_mode
         self.current_job_id: str | None = None
         self.current_intent: str | None = None
         self.outbox: list[TelegramOutgoingMessage] = []
         self.auto_sender: Callable[[TelegramOutgoingMessage], None] | None = None
+        self._main_dedupe_keys: set[tuple[str, str, str, str, str]] = set()
 
     def publish(self, message: TeamMessage) -> None:
         if message.channel in {TeamMessageChannel.LOG_CHAT, TeamMessageChannel.DEBUG}:
@@ -190,11 +201,46 @@ class TelegramTeamMessageSink(TeamMessageSink):
                 return
         elif message.channel == TeamMessageChannel.MAIN_CHAT and not self.human_messages:
             return
+        elif (
+            message.channel == TeamMessageChannel.MAIN_CHAT
+            and self.atmosphere_mode in {"minimal", "result_snippet", "off"}
+            and message.metadata.get("atmosphere")
+        ):
+            return
+        if message.channel == TeamMessageChannel.MAIN_CHAT and self._is_duplicate_main(message):
+            return
         outgoing = TelegramOutgoingMessage(
             chat_id=self._target_chat_id(message.channel),
             text=self.render(message),
             channel=message.channel,
             send_typing=message.channel == TeamMessageChannel.MAIN_CHAT,
+        )
+        if self.auto_sender is not None:
+            self.auto_sender(outgoing)
+            return
+        self.outbox.append(outgoing)
+
+    def publish_human_text(
+        self,
+        *,
+        run_id: str,
+        agent_role: AgentRole | str | None,
+        phase: str,
+        text: str,
+    ) -> None:
+        normalized = _normalize_dedupe_text(text)
+        if not normalized:
+            return
+        role_text = agent_role.value if isinstance(agent_role, AgentRole) else str(agent_role or "")
+        key = (self.session_id or "", run_id, role_text, phase, normalized)
+        if key in self._main_dedupe_keys:
+            return
+        self._main_dedupe_keys.add(key)
+        outgoing = TelegramOutgoingMessage(
+            chat_id=self.chat_id,
+            text=normalized,
+            channel=TeamMessageChannel.MAIN_CHAT,
+            send_typing=True,
         )
         if self.auto_sender is not None:
             self.auto_sender(outgoing)
@@ -245,6 +291,21 @@ class TelegramTeamMessageSink(TeamMessageSink):
             return self.log_chat_id or self.chat_id
         return self.chat_id
 
+    def _is_duplicate_main(self, message: TeamMessage) -> bool:
+        role_text = message.author_role.value if message.author_role is not None else ""
+        phase = str(message.metadata.get("phase") or message.type.value)
+        key = (
+            self.session_id or "",
+            message.run_id,
+            role_text,
+            phase,
+            _normalize_dedupe_text(self.render(message)),
+        )
+        if key in self._main_dedupe_keys:
+            return True
+        self._main_dedupe_keys.add(key)
+        return False
+
 
 class TelegramTeamLogSink(TelegramTeamMessageSink):
     def publish(self, message: TeamMessage) -> None:
@@ -280,6 +341,7 @@ class TelegramTeamSessionRegistry:
                 session_id=str(chat_id),
                 provider=self.config.provider,
                 execution_mode="sequential",
+                atmosphere_mode=self.config.atmosphere_mode,
             )
             self.sessions[chat_id] = TelegramTeamSession(
                 controller=TeamConversationController(
@@ -858,7 +920,7 @@ class TelegramTeamBridge:
         self._watch_tasks.add(watch_task)
         watch_task.add_done_callback(self._watch_tasks.discard)
         return TeamRuntimeResponse(
-            user_visible_reply=TeamAtmosphereRenderer(self.config.atmosphere).task_started_reply(),
+            user_visible_reply=self._task_started_reply(),
             decision=decision,
             status=TeamRuntimeStatus.RUNNING,
             run_id=handle.job.id,
@@ -986,10 +1048,13 @@ class TelegramTeamBridge:
                 provider=self.config.provider,
                 execution_mode="sequential",
             )
+            if self.config.atmosphere_mode == "result_snippet":
+                await self._send_result_snippets(chat_id=chat_id, snapshot=snapshot)
+            final_text = self._completed_final_text(snapshot)
             await self._send(
                 TelegramOutgoingMessage(
                     chat_id=chat_id,
-                    text=snapshot.final_text or "Готово.",
+                    text=final_text,
                     send_typing=True,
                 )
             )
@@ -1014,6 +1079,19 @@ class TelegramTeamBridge:
                     text=self._failed_job_text(snapshot),
                     send_typing=True,
                 )
+            )
+        elif snapshot.status == TeamJobStatus.CANCELLED:
+            await self._send_log(
+                text="run_cancelled",
+                job_id=snapshot.job_id,
+                run_id=snapshot.run_id,
+                intent=intent,
+                status=snapshot.status.value,
+                workspace=snapshot.workspace_path,
+                session_id=snapshot.session_id,
+                provider=self.config.provider,
+                execution_mode="sequential",
+                error_message=snapshot.error_message,
             )
 
     def _job_response(
@@ -1079,7 +1157,8 @@ class TelegramTeamBridge:
                     f"Последняя завершённая задача: {snapshot.job_id}.",
                     f"run_id: {run}",
                     f"workspace: {workspace}",
-                    f"Последний результат: {_preview_text(snapshot.final_text or '')}",
+                    "Последний результат: "
+                    f"{_preview_text(_clean_final_answer_text(snapshot.final_text or ''))}",
                 ]
             )
         if snapshot.status == TeamJobStatus.FAILED:
@@ -1125,6 +1204,48 @@ class TelegramTeamBridge:
             lines.append(f"Можно продолжить: astra-nexus-team-resume {snapshot.run_id}")
         return "\n".join(lines)
 
+    def _task_started_reply(self) -> str:
+        if self.config.atmosphere_mode in {"minimal", "result_snippet", "off"}:
+            return "Принял задачу. Команда начала работу."
+        return TeamAtmosphereRenderer(self.config.atmosphere).task_started_reply()
+
+    async def _send_result_snippets(
+        self,
+        *,
+        chat_id: int,
+        snapshot: TeamJobSnapshot,
+    ) -> None:
+        for result in self._workspace_results_payload(snapshot.workspace_path):
+            role = str(result.get("role") or "")
+            content = _clean_final_answer_text(str(result.get("content") or ""))
+            snippet = _preview_text(content, limit=self.config.atmosphere_snippet_max_chars)
+            if not role or snippet == "нет":
+                continue
+            await self._send(
+                TelegramOutgoingMessage(
+                    chat_id=chat_id,
+                    text=f"[{role}] {snippet}",
+                    send_typing=True,
+                )
+            )
+
+    def _completed_final_text(self, snapshot: TeamJobSnapshot) -> str:
+        final_text = _clean_final_answer_text(snapshot.final_text or "")
+        if final_text:
+            return final_text
+
+        for result in reversed(self._workspace_results_payload(snapshot.workspace_path)):
+            if result.get("role") != AgentRole.FINAL_COMPOSER.value:
+                continue
+            final_text = _clean_final_answer_text(str(result.get("content") or ""))
+            if final_text:
+                return final_text
+
+        artifact_final = self._workspace_artifact_final_answer(snapshot.workspace_path)
+        if artifact_final:
+            return artifact_final
+        return "Команда завершилась, но финальный ответ пуст. Детали отправлены в log chat."
+
     def _registry_status_text(self, entry: TeamRunRegistryEntry) -> str:
         lines = [
             "Активная задача: нет.",
@@ -1138,7 +1259,10 @@ class TelegramTeamBridge:
         if entry.finished_at is not None:
             lines.append(f"finished: {entry.finished_at.isoformat()}")
         if entry.status == "completed":
-            lines.append(f"Последний результат: {_preview_text(entry.final_result or '')}")
+            lines.append(
+                "Последний результат: "
+                f"{_preview_text(_clean_final_answer_text(entry.final_result or ''))}"
+            )
             if entry.artifacts_count:
                 lines.append(f"artifacts: {entry.artifacts_count}")
                 if entry.primary_artifact_path is not None:
@@ -1258,14 +1382,32 @@ class TelegramTeamBridge:
                 await self._send_document(chat_id=chat_id, path=path)
 
     def _workspace_run_payload(self, workspace_path: Path | None) -> dict[str, Any]:
-        if workspace_path is None:
-            return {}
-        run_json_path = workspace_path / "run.json"
-        try:
-            payload = json.loads(run_json_path.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
+        payload = self._workspace_json(workspace_path, "run.json")
         return payload if isinstance(payload, dict) else {}
+
+    def _workspace_results_payload(self, workspace_path: Path | None) -> list[dict[str, Any]]:
+        payload = self._workspace_json(workspace_path, "results.json")
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)]
+
+    def _workspace_json(self, workspace_path: Path | None, filename: str) -> Any:
+        if workspace_path is None:
+            return None
+        json_path = workspace_path / filename
+        try:
+            return json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def _workspace_artifact_final_answer(self, workspace_path: Path | None) -> str:
+        if workspace_path is None:
+            return ""
+        final_answer_path = workspace_path / "artifacts" / "final_answer.md"
+        try:
+            return _clean_final_answer_text(final_answer_path.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
 
     def _technical_error_text(self, snapshot: TeamJobSnapshot) -> str | None:
         payload = self._workspace_run_payload(snapshot.workspace_path)
@@ -1725,6 +1867,25 @@ def _preview_text(text: str, *, limit: int = 180) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[: limit - 1].rstrip()}..."
+
+
+def _normalize_dedupe_text(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _clean_final_answer_text(text: str) -> str:
+    compact = str(text or "").strip()
+    for prefix in (
+        "fake:final_composer:",
+        "nodriver_team:final_composer:",
+        "final_composer:",
+    ):
+        if compact.lower().startswith(prefix):
+            compact = compact[len(prefix) :].strip()
+            break
+    if "Ты агент в системе" in compact:
+        return ""
+    return compact
 
 
 def _datetime_text(value: Any) -> str:

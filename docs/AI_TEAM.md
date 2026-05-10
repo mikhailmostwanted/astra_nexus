@@ -222,6 +222,10 @@ astra-nexus-team-telegram-live-preview
 - `TEAM_TELEGRAM_MAX_FILE_SIZE_MB` - лимит одного Telegram файла.
 - `TEAM_TELEGRAM_HUMAN_MESSAGES=true|false` - включить или выключить живые реплики агентов
   в основном чате.
+- `TEAM_ATMOSPHERE_MODE=template|minimal|result_snippet|off` - режим main-chat UX.
+  Для `TEAM_TELEGRAM_PROVIDER=nodriver` default `template` автоматически становится
+  `minimal`, чтобы основной чат не выглядел как демо с заготовленными фразами.
+- `TEAM_ATMOSPHERE_SNIPPET_MAX_CHARS` - максимум символов в result snippet, default `220`.
 - `TEAM_ATMOSPHERE_ENABLED=true|false` - включает слой живого, но контролируемого
   Telegram rendering.
 - `TEAM_ATMOSPHERE_LEVEL=minimal|normal|cinematic` - плотность реплик. `minimal` режет
@@ -238,8 +242,13 @@ astra-nexus-team-telegram-live-preview
 
 Поведение чатов:
 
-- основной чат получает короткое подтверждение `Босс, вижу задачу. Сначала разложу её на
-  части.`, humanized реплики агентов из atmosphere layer и отдельное финальное сообщение;
+- в `template` основной чат получает старые humanized реплики atmosphere layer. Этот режим
+  удобен для fake provider/demo.
+- в `minimal` основной чат получает только `Принял задачу. Команда начала работу.`, редкие
+  служебные сообщения, финальный ответ и файлы результата.
+- в `result_snippet` агентские сообщения строятся из реальных `AgentResult`, не из
+  шаблонов; если результата ещё нет, реплика не отправляется.
+- в `off` agent chatter в основной чат не отправляется.
 - log chat получает технические события `run_started`, `agent_started`, `agent_finished`,
   `run_finished`, `run_failed`, `run_cancelled` с `job_id`, `run_id`, `session_id`,
   `intent`, `provider`, `execution_mode`, `workspace` и `status`;
@@ -621,19 +630,22 @@ Telegram-диалог оставался предсказуемым.
 текстом, а также временная обработка `task_followup` и `revise_previous_result` как новой
 контекстной задачи.
 
+Основной чат дедуплицирует human messages по ключу session/run/agent/phase/text; log chat
+technical events не дедуплицируются.
+
 `status_request` читает runtime state и возвращает активные runs или последний
 completed/failed run, если он ещё есть в памяти. Telegram bridge дополнительно умеет
 поднять последний terminal run из файлового Team Run Registry после restart-like
-состояния. `stop_all` пока не убивает реальные provider/browser процессы, но помечает
-active runs как stopped/cancelled и очищает in-memory active state. Это foundation для
-будущей безопасной остановки Telegram-задач.
+состояния. `stop_all` отменяет активный background job без traceback в main chat. Для
+NoDriver provider отмена пробрасывается в ожидание ChatGPT Web; client best-effort нажимает
+Stop generating, если кнопка доступна, и освобождает session/browser lock.
 
 Текущие ограничения:
 
 - runtime active state остаётся in-memory, без SQLite/Redis;
 - нет реального parallel execution;
 - Telegram API не подключён;
-- stop/cancel пока архитектурный флаг, а не принудительное завершение NoDriver.
+- stop/cancel зависит от корректной отмены текущего provider await и best-effort UI stop.
 
 Preview runtime-flow без NoDriver:
 
@@ -713,7 +725,7 @@ TELEGRAM_BOT_TOKEN=... astra-nexus-team-telegram-bot
 - OCR и внешние бинарники для файлов не используются;
 - Telegram session/job registry остаётся in-memory, а история runs читается из
   файлового Team Run Registry;
-- NoDriver lifecycle/start/clean не меняется.
+- NoDriver provider остаётся single-profile; отдельные agent chats пока только registry.
 
 ## Telegram Team Jobs v1
 
@@ -735,8 +747,9 @@ TELEGRAM_BOT_TOKEN=... astra-nexus-team-telegram-bot
 
 - обычный `casual_chat`, `empty_input` и `unknown` не создают background job;
 - новая задача создаёт `TeamJob` и сразу отвечает в основной чат:
-  `Босс, вижу задачу. Сначала разложу её на части.`;
-- агентские `TeamMessage` продолжают уходить через Telegram sink по мере выполнения;
+  `Принял задачу. Команда начала работу.` в minimal/result_snippet/off режимах или
+  template-репликой в demo-режиме;
+- agent chatter зависит от `TEAM_ATMOSPHERE_MODE`; technical events уходят в log chat;
 - `/status` во время active job показывает job id, статус и run id, если run уже создан;
 - `/status` без active job показывает последний terminal run из файлового registry;
 - `/runs` показывает последние сохранённые runs текущего chat/session и artifact summary,
@@ -763,9 +776,9 @@ astra-nexus-team-telegram-job-preview \
 Ограничения jobs v1:
 
 - это фоновые Telegram jobs, а не параллельные агенты внутри pipeline;
-- NoDriver lifecycle/start/clean не меняется;
-- cancel best-effort: job получает `Task.cancel()`, но отдельный browser lifecycle не
-  переписывается;
+- NoDriver provider остаётся single-profile;
+- cancel best-effort: job получает `Task.cancel()`, NoDriver wait пытается нажать
+  Stop generating, если UI позволяет;
 - active job registry остаётся in-memory, persistent run history лежит в `TEAM_RUNS_DIR`;
 - DOCX/PDF извлекаются как текст; OCR и внешние бинарники не используются.
 
@@ -991,6 +1004,28 @@ ChatGPT client, retry/debug поведение и локальный browser pro
 
 Этот prompt отправляется в существующий `NoDriverProvider.ask(...)` с `agent_id` текущей
 роли и контекстом run/workspace для debug-reporting.
+
+## Agent Chat Sessions foundation
+
+Полноценный multi-chat provider пока не включён. Orchestrator по-прежнему использует один
+`NoDriverTeamProvider` и один browser profile. Для следующего этапа добавлен только
+registry отдельных ChatGPT-чатов:
+
+```bash
+astra-nexus-team-agent-chats-preview
+```
+
+Данные хранятся в `data/team_agent_chats/agent_chats.json`. Модель
+`AgentChatSession` содержит `agent_role`, `display_name`, `chat_url`, optional
+`conversation_id`, `bootstrap_status`, desired model/reasoning и timestamps. Планируемые
+роли для будущего этапа:
+
+- coordinator chat;
+- analyst chat;
+- critic chat;
+- editor chat;
+- qa chat;
+- final_composer chat.
 
 ## CLI smoke
 

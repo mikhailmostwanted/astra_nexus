@@ -39,8 +39,13 @@ async def arun(
     print(f"start_retry_delay: {settings.nodriver_start_retry_delay_seconds}")
     print(f"after_terminate_grace: {settings.nodriver_after_terminate_grace_seconds}")
     print(f"window_mode: {settings.nodriver_window_mode}")
+    print(f"provider_window_mode: {settings.nodriver_provider_window_mode}")
+    print(f"login_window_mode: {settings.nodriver_login_window_mode}")
     print(f"background_start: {_bool_text(settings.nodriver_background_start)}")
     print(f"disable_focus_stealing: {_bool_text(settings.nodriver_disable_focus_stealing)}")
+    print(f"preferred_model: {settings.nodriver_preferred_model_name or 'none'}")
+    print(f"preferred_reasoning_mode: {settings.nodriver_preferred_reasoning_mode or 'none'}")
+    print(f"require_preferred_model: {_bool_text(settings.nodriver_require_preferred_model)}")
     print(f"live_profile_processes: {_format_processes(snapshot.live_profile_processes)}")
 
     if snapshot.profile_locked:

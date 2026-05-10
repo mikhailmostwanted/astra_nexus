@@ -209,7 +209,8 @@ def test_telegram_preview_task_starts_background_job() -> None:
 
         assert completed.status == TeamJobStatus.COMPLETED
         assert bridge.registry.get(100).state.last_completed_run_id == completed.run_id
-        assert any("fake:final_composer" in message.text for message in bot.messages)
+        assert any("сделай краткий план AI-команды" in message.text for message in bot.messages)
+        assert all("fake:final_composer" not in message.text for message in bot.messages)
         assert any("Файлы результата сохранены" in message.text for message in bot.messages)
         assert {document.filename for document in bot.documents} >= {
             "final_answer.md",
@@ -713,7 +714,8 @@ def test_telegram_preview_cli_uses_fake_provider_without_nodriver(capsys) -> Non
     source = inspect.getsource(telegram_bridge_module)
     assert exit_code == 0
     assert "[Основной чат]" in output
-    assert "fake:final_composer" in output
+    assert "сделай краткий план AI-команды" in output
+    assert "fake:final_composer" not in output
     assert "from astra_nexus.team.nodriver_provider import" not in source
 
 
@@ -724,7 +726,8 @@ def test_telegram_job_preview_cli_runs_multiple_messages(capsys) -> None:
     assert exit_code == 0
     assert "> сделай краткий план AI-команды" in output
     assert "> /status" in output
-    assert "fake:final_composer" in output
+    assert "сделай краткий план AI-команды" in output
+    assert "fake:final_composer" not in output
 
 
 def test_telegram_live_preview_cli_simulates_main_and_log_chats(capsys) -> None:

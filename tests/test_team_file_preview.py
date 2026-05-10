@@ -18,6 +18,7 @@ def test_file_preview_cli_runs_fake_provider_with_attachment(tmp_path, capsys) -
     assert "extracted_chars:" in output
     assert "preview:" in output
     assert "Файл для preview" in output
-    assert "fake:final_composer" in output
+    assert "проверь файл" in output
+    assert "fake:final_composer" not in output
     assert "NoDriver" not in source
     assert "nodriver" not in source

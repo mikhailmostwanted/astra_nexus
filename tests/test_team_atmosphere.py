@@ -164,6 +164,7 @@ def test_telegram_atmosphere_budget_keeps_final_message_in_main_chat() -> None:
             if message.channel == TeamMessageChannel.MAIN_CHAT
         ]
         assert any("Босс, вижу задачу" in text for text in main_texts)
-        assert any("fake:final_composer" in text for text in main_texts)
+        assert any("сделай краткий план AI-команды" in text for text in main_texts)
+        assert all("fake:final_composer" not in text for text in main_texts)
 
     asyncio.run(scenario())

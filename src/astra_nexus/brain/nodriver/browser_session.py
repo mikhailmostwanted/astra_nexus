@@ -24,6 +24,7 @@ from astra_nexus.brain.nodriver.exceptions import (
 )
 from astra_nexus.brain.nodriver.lifecycle import NoDriverLifecycleManager
 from astra_nexus.brain.nodriver.windowing import (
+    apply_macos_window_adjustment,
     build_nodriver_browser_args,
     effective_nodriver_headless,
     effective_nodriver_window_mode,
@@ -140,6 +141,15 @@ class BrowserSession:
                     previous_profile_process_pids=previous_profile_process_pids,
                 )
                 await self._record_current_endpoint_diagnostics(attempt_diagnostics)
+                try:
+                    await self._apply_post_start_window_behavior(browser)
+                except Exception as exc:
+                    attempt_diagnostics["window_adjustment"] = {
+                        "attempted": True,
+                        "ok": False,
+                        "error": str(exc),
+                    }
+                    logger.warning("NoDriver post-start window adjustment failed: %s", exc)
                 attempt_diagnostics["connected"] = True
                 return self.browser
             except (KeyboardInterrupt, asyncio.CancelledError):
@@ -527,6 +537,8 @@ class BrowserSession:
                 self.settings.nodriver_after_terminate_grace_seconds
             ),
             "NODRIVER_WINDOW_MODE": self.settings.nodriver_window_mode,
+            "NODRIVER_PROVIDER_WINDOW_MODE": self.settings.nodriver_provider_window_mode,
+            "NODRIVER_LOGIN_WINDOW_MODE": self.settings.nodriver_login_window_mode,
             "NODRIVER_BACKGROUND_START": self.settings.nodriver_background_start,
             "NODRIVER_DISABLE_FOCUS_STEALING": self.settings.nodriver_disable_focus_stealing,
         }
@@ -567,6 +579,21 @@ class BrowserSession:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind((REMOTE_DEBUGGING_HOST, 0))
             return int(sock.getsockname()[1])
+
+    async def _apply_post_start_window_behavior(self, browser: Any) -> None:
+        try:
+            report = await asyncio.to_thread(
+                apply_macos_window_adjustment,
+                self.settings,
+                context=self.lifecycle_context,
+            )
+        except Exception as exc:
+            report = {"attempted": True, "ok": False, "error": str(exc)}
+            logger.warning("NoDriver post-start window adjustment failed: %s", exc)
+        if self.start_diagnostics:
+            self.start_diagnostics[-1]["window_adjustment"] = report
+        if report.get("attempted") and not report.get("ok"):
+            logger.warning("NoDriver window adjustment did not complete: %s", report)
 
     def _start_retry_backoff_seconds(self) -> float:
         return max(0.0, float(self.settings.nodriver_start_retry_backoff_seconds))

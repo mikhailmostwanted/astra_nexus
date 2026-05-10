@@ -269,6 +269,22 @@ class Settings(BaseSettings):
             "NODRIVER_WINDOW_MODE",
         ),
     )
+    nodriver_provider_window_mode: str = Field(
+        default="offscreen",
+        validation_alias=AliasChoices(
+            "nodriver_provider_window_mode",
+            "ASTRA_NODRIVER_PROVIDER_WINDOW_MODE",
+            "NODRIVER_PROVIDER_WINDOW_MODE",
+        ),
+    )
+    nodriver_login_window_mode: str = Field(
+        default="small",
+        validation_alias=AliasChoices(
+            "nodriver_login_window_mode",
+            "ASTRA_NODRIVER_LOGIN_WINDOW_MODE",
+            "NODRIVER_LOGIN_WINDOW_MODE",
+        ),
+    )
     nodriver_window_width: int = Field(
         default=1100,
         validation_alias=AliasChoices(
@@ -299,6 +315,38 @@ class Settings(BaseSettings):
             "nodriver_window_y",
             "ASTRA_NODRIVER_WINDOW_Y",
             "NODRIVER_WINDOW_Y",
+        ),
+    )
+    nodriver_minimize_after_start: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "nodriver_minimize_after_start",
+            "ASTRA_NODRIVER_MINIMIZE_AFTER_START",
+            "NODRIVER_MINIMIZE_AFTER_START",
+        ),
+    )
+    nodriver_hide_after_start: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "nodriver_hide_after_start",
+            "ASTRA_NODRIVER_HIDE_AFTER_START",
+            "NODRIVER_HIDE_AFTER_START",
+        ),
+    )
+    nodriver_offscreen_x: int = Field(
+        default=-3000,
+        validation_alias=AliasChoices(
+            "nodriver_offscreen_x",
+            "ASTRA_NODRIVER_OFFSCREEN_X",
+            "NODRIVER_OFFSCREEN_X",
+        ),
+    )
+    nodriver_offscreen_y: int = Field(
+        default=20,
+        validation_alias=AliasChoices(
+            "nodriver_offscreen_y",
+            "ASTRA_NODRIVER_OFFSCREEN_Y",
+            "NODRIVER_OFFSCREEN_Y",
         ),
     )
     nodriver_background_start: bool = Field(
@@ -349,12 +397,36 @@ class Settings(BaseSettings):
             "NODRIVER_CHATGPT_URL",
         ),
     )
-    nodriver_response_timeout_seconds: int = Field(
+    nodriver_response_timeout_seconds: float = Field(
         default=180,
         validation_alias=AliasChoices(
             "nodriver_response_timeout_seconds",
             "ASTRA_NODRIVER_RESPONSE_TIMEOUT_SECONDS",
             "NODRIVER_RESPONSE_TIMEOUT_SECONDS",
+        ),
+    )
+    nodriver_response_idle_confirm_seconds: float = Field(
+        default=2.0,
+        validation_alias=AliasChoices(
+            "nodriver_response_idle_confirm_seconds",
+            "ASTRA_NODRIVER_RESPONSE_IDLE_CONFIRM_SECONDS",
+            "NODRIVER_RESPONSE_IDLE_CONFIRM_SECONDS",
+        ),
+    )
+    nodriver_response_progress_log_interval_seconds: float = Field(
+        default=30.0,
+        validation_alias=AliasChoices(
+            "nodriver_response_progress_log_interval_seconds",
+            "ASTRA_NODRIVER_RESPONSE_PROGRESS_LOG_INTERVAL_SECONDS",
+            "NODRIVER_RESPONSE_PROGRESS_LOG_INTERVAL_SECONDS",
+        ),
+    )
+    nodriver_response_max_empty_wait_seconds: float | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "nodriver_response_max_empty_wait_seconds",
+            "ASTRA_NODRIVER_RESPONSE_MAX_EMPTY_WAIT_SECONDS",
+            "NODRIVER_RESPONSE_MAX_EMPTY_WAIT_SECONDS",
         ),
     )
     nodriver_page_load_timeout_seconds: float = Field(
@@ -427,6 +499,30 @@ class Settings(BaseSettings):
             "NODRIVER_AFTER_TERMINATE_GRACE_SECONDS",
         ),
     )
+    nodriver_preferred_model_name: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nodriver_preferred_model_name",
+            "ASTRA_NODRIVER_PREFERRED_MODEL_NAME",
+            "NODRIVER_PREFERRED_MODEL_NAME",
+        ),
+    )
+    nodriver_preferred_reasoning_mode: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "nodriver_preferred_reasoning_mode",
+            "ASTRA_NODRIVER_PREFERRED_REASONING_MODE",
+            "NODRIVER_PREFERRED_REASONING_MODE",
+        ),
+    )
+    nodriver_require_preferred_model: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "nodriver_require_preferred_model",
+            "ASTRA_NODRIVER_REQUIRE_PREFERRED_MODEL",
+            "NODRIVER_REQUIRE_PREFERRED_MODEL",
+        ),
+    )
     log_level: str = Field(
         default="INFO",
         validation_alias=AliasChoices("log_level", "ASTRA_LOG_LEVEL", "LOG_LEVEL"),
@@ -495,6 +591,22 @@ class Settings(BaseSettings):
             "ASTRA_TEAM_TELEGRAM_HUMAN_MESSAGES",
         ),
     )
+    team_atmosphere_mode: str = Field(
+        default="template",
+        validation_alias=AliasChoices(
+            "team_atmosphere_mode",
+            "TEAM_ATMOSPHERE_MODE",
+            "ASTRA_TEAM_ATMOSPHERE_MODE",
+        ),
+    )
+    team_atmosphere_snippet_max_chars: int = Field(
+        default=220,
+        validation_alias=AliasChoices(
+            "team_atmosphere_snippet_max_chars",
+            "TEAM_ATMOSPHERE_SNIPPET_MAX_CHARS",
+            "ASTRA_TEAM_ATMOSPHERE_SNIPPET_MAX_CHARS",
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -520,13 +632,43 @@ class Settings(BaseSettings):
                 return normalized
         return value
 
-    @field_validator("nodriver_window_mode", mode="before")
+    @field_validator(
+        "nodriver_window_mode",
+        "nodriver_provider_window_mode",
+        "nodriver_login_window_mode",
+        mode="before",
+    )
     @classmethod
     def normalize_nodriver_window_mode(cls, value: object) -> object:
         if isinstance(value, str):
             normalized = value.strip().lower()
-            if normalized in {"normal", "small", "offscreen", "headless"}:
+            if normalized == "headless":
+                return "headless_experimental"
+            if normalized in {
+                "normal",
+                "visible",
+                "small",
+                "minimized",
+                "offscreen",
+                "headless_experimental",
+            }:
                 return normalized
+        return value
+
+    @field_validator("team_atmosphere_mode", mode="before")
+    @classmethod
+    def normalize_team_atmosphere_mode(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"template", "minimal", "result_snippet", "off"}:
+                return normalized
+        return value
+
+    @field_validator("nodriver_response_max_empty_wait_seconds", mode="before")
+    @classmethod
+    def empty_response_max_empty_wait_as_none(cls, value: object) -> object:
+        if value == "":
+            return None
         return value
 
     @property

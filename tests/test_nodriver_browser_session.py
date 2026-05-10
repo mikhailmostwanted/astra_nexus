@@ -99,7 +99,7 @@ def test_browser_session_builds_start_kwargs_with_timeout_no_sandbox_and_executa
 def test_browser_session_small_window_mode_adds_size_and_position(tmp_path: Path) -> None:
     settings = Settings(
         nodriver_user_data_dir=tmp_path / "profile",
-        nodriver_window_mode="small",
+        nodriver_provider_window_mode="small",
         nodriver_window_width=900,
         nodriver_window_height=700,
         nodriver_window_x=30,
@@ -116,20 +116,20 @@ def test_browser_session_small_window_mode_adds_size_and_position(tmp_path: Path
 def test_browser_session_offscreen_window_mode_adds_offscreen_position(tmp_path: Path) -> None:
     settings = Settings(
         nodriver_user_data_dir=tmp_path / "profile",
-        nodriver_window_mode="offscreen",
+        nodriver_provider_window_mode="offscreen",
     )
     session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
 
     kwargs = session.build_start_kwargs()
 
     assert kwargs["headless"] is False
-    assert kwargs["browser_args"] == ["--window-size=1100,800", "--window-position=-32000,-32000"]
+    assert kwargs["browser_args"] == ["--window-size=1100,800", "--window-position=-3000,20"]
 
 
 def test_browser_session_normal_window_mode_does_not_add_window_args(tmp_path: Path) -> None:
     settings = Settings(
         nodriver_user_data_dir=tmp_path / "profile",
-        nodriver_window_mode="normal",
+        nodriver_provider_window_mode="visible",
     )
     session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
 
@@ -147,7 +147,7 @@ def test_browser_session_headless_mode_is_explicit_only(tmp_path: Path) -> None:
     )
     headless_settings = Settings(
         nodriver_user_data_dir=tmp_path / "headless",
-        nodriver_window_mode="headless",
+        nodriver_provider_window_mode="headless",
     )
     headless_session = BrowserSession(
         settings=headless_settings,
@@ -161,7 +161,8 @@ def test_browser_session_headless_mode_is_explicit_only(tmp_path: Path) -> None:
 def test_browser_session_login_context_keeps_manual_window_visible(tmp_path: Path) -> None:
     settings = Settings(
         nodriver_user_data_dir=tmp_path / "profile",
-        nodriver_window_mode="offscreen",
+        nodriver_provider_window_mode="offscreen",
+        nodriver_login_window_mode="small",
     )
     session = BrowserSession(
         settings=settings,
@@ -173,6 +174,45 @@ def test_browser_session_login_context_keeps_manual_window_visible(tmp_path: Pat
 
     assert kwargs["headless"] is False
     assert kwargs["browser_args"] == ["--window-size=1100,800", "--window-position=20,20"]
+
+
+def test_browser_session_provider_context_uses_provider_window_mode(tmp_path: Path) -> None:
+    settings = Settings(
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_window_mode="small",
+        nodriver_provider_window_mode="offscreen",
+        nodriver_offscreen_x=-3000,
+        nodriver_offscreen_y=20,
+    )
+    session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
+
+    kwargs = session.build_start_kwargs()
+
+    assert kwargs["browser_args"] == ["--window-size=1100,800", "--window-position=-3000,20"]
+
+
+def test_browser_session_hide_after_start_failure_is_warning_only(tmp_path: Path) -> None:
+    class FailingHideSession(BrowserSession):
+        async def _apply_post_start_window_behavior(self, browser: object) -> None:
+            self.start_diagnostics[-1]["window_adjustment"] = {
+                "attempted": True,
+                "ok": False,
+                "error": "osascript failed",
+            }
+            raise RuntimeError("osascript failed")
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_hide_after_start=True,
+    )
+    session = FailingHideSession(settings=settings, start_browser=lambda **_: FakeBrowser())
+
+    browser = asyncio.run(session.start())
+    asyncio.run(session.stop())
+
+    assert isinstance(browser, FakeBrowser)
+    assert session.start_diagnostics[-1]["window_adjustment"]["ok"] is False
 
 
 def test_browser_session_maps_repeated_start_failures_to_browser_connect_failed(
@@ -215,7 +255,7 @@ def test_browser_session_retries_browser_connect_with_safe_window_fallback(
     settings = Settings(
         data_dir=tmp_path / "data",
         nodriver_user_data_dir=tmp_path / "profile",
-        nodriver_window_mode="small",
+        nodriver_provider_window_mode="small",
         nodriver_window_width=900,
         nodriver_window_height=700,
         nodriver_window_x=30,
@@ -341,7 +381,7 @@ def test_browser_session_browser_connect_error_contains_start_diagnostics(
     settings = Settings(
         data_dir=tmp_path / "data",
         nodriver_user_data_dir=profile,
-        nodriver_window_mode="small",
+        nodriver_provider_window_mode="small",
         nodriver_start_retry_attempts=1,
         nodriver_start_retry_delay_seconds=0,
         nodriver_start_timeout_seconds=7,
@@ -542,7 +582,7 @@ def test_browser_session_releases_lock_when_start_is_cancelled(tmp_path: Path) -
 
 def test_browser_session_awaits_async_stop_and_releases_lock(tmp_path: Path) -> None:
     browser = AsyncStopBrowser()
-    settings = Settings(nodriver_user_data_dir=tmp_path / "profile")
+    settings = Settings(data_dir=tmp_path / "data", nodriver_user_data_dir=tmp_path / "profile")
     session = BrowserSession(settings=settings, start_browser=lambda **_: browser)
 
     asyncio.run(session.start())
@@ -558,7 +598,7 @@ def test_browser_session_uses_close_fallback_and_releases_lock(tmp_path: Path) -
             raise RuntimeError("stop failed")
 
     browser = StopFailingBrowser()
-    settings = Settings(nodriver_user_data_dir=tmp_path / "profile")
+    settings = Settings(data_dir=tmp_path / "data", nodriver_user_data_dir=tmp_path / "profile")
     session = BrowserSession(settings=settings, start_browser=lambda **_: browser)
 
     asyncio.run(session.start())

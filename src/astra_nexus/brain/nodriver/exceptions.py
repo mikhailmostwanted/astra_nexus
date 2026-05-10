@@ -120,6 +120,12 @@ class NoDriverTimeoutError(NoDriverProviderError):
     action = "проверь страницу ChatGPT и повторить задачу позже"
 
 
+class NoDriverPreferredModelError(NoDriverProviderError):
+    status = "preferred_model_not_active"
+    user_message = "в ChatGPT Web выбран не тот режим модели"
+    action = "выбери нужную модель/режим в ChatGPT Web или отключи NODRIVER_REQUIRE_PREFERRED_MODEL"
+
+
 class NoDriverSelectorNotFoundError(NoDriverProviderError):
     status = "selector_not_found"
     user_message = "не найден ожидаемый элемент интерфейса ChatGPT"

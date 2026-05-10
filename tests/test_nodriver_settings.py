@@ -81,9 +81,45 @@ def test_nodriver_window_settings_defaults_are_safe() -> None:
     settings = Settings(_env_file=None)
 
     assert settings.nodriver_window_mode == "small"
+    assert settings.nodriver_provider_window_mode == "offscreen"
+    assert settings.nodriver_login_window_mode == "small"
+    assert settings.nodriver_minimize_after_start is True
+    assert settings.nodriver_hide_after_start is False
+    assert settings.nodriver_offscreen_x == -3000
+    assert settings.nodriver_offscreen_y == 20
     assert settings.nodriver_window_width == 1100
     assert settings.nodriver_window_height == 800
     assert settings.nodriver_window_x == 20
     assert settings.nodriver_window_y == 20
     assert settings.nodriver_background_start is False
     assert settings.nodriver_disable_focus_stealing is False
+
+
+def test_nodriver_response_wait_settings_accept_requested_env_aliases(monkeypatch) -> None:
+    monkeypatch.setenv("NODRIVER_RESPONSE_TIMEOUT_SECONDS", "0")
+    monkeypatch.setenv("NODRIVER_RESPONSE_IDLE_CONFIRM_SECONDS", "3.25")
+    monkeypatch.setenv("NODRIVER_RESPONSE_PROGRESS_LOG_INTERVAL_SECONDS", "10")
+    monkeypatch.setenv("NODRIVER_RESPONSE_MAX_EMPTY_WAIT_SECONDS", "0")
+    monkeypatch.setenv("NODRIVER_PREFERRED_MODEL_NAME", "GPT-5.5 Thinking")
+    monkeypatch.setenv("NODRIVER_PREFERRED_REASONING_MODE", "extended")
+    monkeypatch.setenv("NODRIVER_REQUIRE_PREFERRED_MODEL", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.nodriver_response_timeout_seconds == 0
+    assert settings.nodriver_response_idle_confirm_seconds == 3.25
+    assert settings.nodriver_response_progress_log_interval_seconds == 10
+    assert settings.nodriver_response_max_empty_wait_seconds == 0
+    assert settings.nodriver_preferred_model_name == "GPT-5.5 Thinking"
+    assert settings.nodriver_preferred_reasoning_mode == "extended"
+    assert settings.nodriver_require_preferred_model is True
+
+
+def test_team_atmosphere_mode_settings_accept_env_aliases(monkeypatch) -> None:
+    monkeypatch.setenv("TEAM_ATMOSPHERE_MODE", "result_snippet")
+    monkeypatch.setenv("TEAM_ATMOSPHERE_SNIPPET_MAX_CHARS", "120")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.team_atmosphere_mode == "result_snippet"
+    assert settings.team_atmosphere_snippet_max_chars == 120

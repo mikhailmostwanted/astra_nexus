@@ -61,3 +61,28 @@ def test_nodriver_doctor_starts_browser_without_ask_and_prints_diagnostics(
     assert "remote_debugging_port: 9222" in output
     assert "endpoint_open: true" in output
     assert "window_mode: normal" in output
+
+
+def test_nodriver_doctor_prints_preferred_model_and_reasoning(tmp_path: Path, capsys) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_preferred_model_name="GPT-5.5 Thinking",
+        nodriver_preferred_reasoning_mode="extended",
+    )
+
+    exit_code = asyncio.run(
+        doctor.arun(
+            settings=settings,
+            session_factory=lambda settings, lifecycle_context: FakeDoctorSession(
+                settings,
+                lifecycle_context,
+            ),
+        )
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "preferred_model: GPT-5.5 Thinking" in output
+    assert "preferred_reasoning_mode: extended" in output
