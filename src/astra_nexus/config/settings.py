@@ -219,6 +219,30 @@ class Settings(BaseSettings):
             "ASTRA_TELEGRAM_BOT_TOKEN",
         ),
     )
+    team_telegram_provider: str = Field(
+        default="fake",
+        validation_alias=AliasChoices(
+            "team_telegram_provider",
+            "TEAM_TELEGRAM_PROVIDER",
+            "ASTRA_TEAM_TELEGRAM_PROVIDER",
+        ),
+    )
+    team_telegram_log_chat_id: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "team_telegram_log_chat_id",
+            "TEAM_TELEGRAM_LOG_CHAT_ID",
+            "ASTRA_TEAM_TELEGRAM_LOG_CHAT_ID",
+        ),
+    )
+    team_telegram_allowed_chat_ids: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "team_telegram_allowed_chat_ids",
+            "TEAM_TELEGRAM_ALLOWED_CHAT_IDS",
+            "ASTRA_TEAM_TELEGRAM_ALLOWED_CHAT_IDS",
+        ),
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",

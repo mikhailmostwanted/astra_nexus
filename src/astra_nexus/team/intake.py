@@ -63,7 +63,13 @@ class TeamConversationResult:
 
 class TeamIntakeRouter:
     stop_phrases = ("/stopall", "стоп все", "стоп всё", "останови всё", "остановить всех")
-    status_phrases = ("статус", "что сейчас", "как дела с задачей", "что происходит")
+    status_phrases = (
+        "/status",
+        "статус",
+        "что сейчас",
+        "как дела с задачей",
+        "что происходит",
+    )
     resume_phrases = ("продолжи", "resume", "доделай прошлое", "продолжи прошлое")
     task_verbs = (
         "сделай",

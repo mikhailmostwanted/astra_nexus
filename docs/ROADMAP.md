@@ -104,6 +104,7 @@
 - Добавлен внутренний event stream и human-readable сообщения агентов для будущего Telegram/UI bridge.
 - Добавлен Team Intake / Intent Router, чтобы обычный диалог не запускал AI-команду автоматически.
 - Добавлен Team Runtime / Conversation Controller для связки intake, orchestrator, workspace, resume и message sink.
+- Добавлен Telegram Team Bridge v1 как тонкая aiogram-оболочка над runtime/controller.
 
 ---
 
@@ -113,9 +114,9 @@
 
 ### Нужно сделать
 
-- Подключить Telegram bot polling.
-- Сделать основной чат пользователя.
-- Сделать отдельный лог-чат или супергруппу для отображения работы команды.
+- Подключить Telegram bot polling. (v1 добавлен как bridge над `TeamConversationController`.)
+- Сделать основной чат пользователя. (v1 отправляет `user_visible_reply` и main-chat сообщения.)
+- Сделать отдельный лог-чат или супергруппу для отображения работы команды. (v1 поддерживает `TEAM_TELEGRAM_LOG_CHAT_ID`.)
 - Добавить отображение:
   - кто из агентов сейчас думает;
   - кто что предложил;

@@ -29,6 +29,8 @@ astra-nexus-team-intake-preview = "astra_nexus.team.intake_preview:main"
 astra-nexus-team-resume = "astra_nexus.team.resume:main"
 astra-nexus-team-runtime-preview = "astra_nexus.team.runtime_preview:main"
 astra-nexus-team-smoke = "astra_nexus.team.smoke:main"
+astra-nexus-team-telegram-bot = "astra_nexus.team.telegram_bridge:main_bot"
+astra-nexus-team-telegram-preview = "astra_nexus.team.telegram_bridge:main_preview"
 
 [project.optional-dependencies]
 dev = [

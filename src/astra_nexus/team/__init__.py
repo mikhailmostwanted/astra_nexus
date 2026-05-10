@@ -42,6 +42,16 @@ from astra_nexus.team.runtime import (
     TeamRuntimeState,
     TeamRuntimeStatus,
 )
+from astra_nexus.team.telegram_bridge import (
+    RecordingTelegramBot,
+    TelegramOutgoingMessage,
+    TelegramTeamBridge,
+    TelegramTeamBridgeConfig,
+    TelegramTeamLogSink,
+    TelegramTeamMessageSink,
+    TelegramTeamSession,
+    TelegramTeamSessionRegistry,
+)
 from astra_nexus.team.workspace import TeamRunWorkspace
 
 __all__ = [
@@ -84,5 +94,13 @@ __all__ = [
     "TeamRun",
     "TeamRunOutcome",
     "TeamRunWorkspace",
+    "RecordingTelegramBot",
+    "TelegramOutgoingMessage",
+    "TelegramTeamBridge",
+    "TelegramTeamBridgeConfig",
+    "TelegramTeamLogSink",
+    "TelegramTeamMessageSink",
+    "TelegramTeamSession",
+    "TelegramTeamSessionRegistry",
     "default_profiles_by_role",
 ]
