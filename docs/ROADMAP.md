@@ -117,6 +117,8 @@
   `/status` после restart-like состояния и tolerant чтение повреждённых `run.json`.
 - Добавлен Attachments Extraction v2: извлечение текста из `txt`, `md`, `docx`, `pdf`,
   prompt truncation, расширенная metadata attachments и безопасные ошибки extraction.
+- Добавлен Output Artifacts v1: итоговые markdown/json артефакты run, индекс
+  `artifacts/index.md`, manifest, Telegram notice и отправка `final_answer.md`/`index.md`.
 
 ---
 

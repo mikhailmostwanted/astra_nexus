@@ -117,6 +117,11 @@ def test_telegram_preview_task_starts_background_job() -> None:
         assert completed.status == TeamJobStatus.COMPLETED
         assert bridge.registry.get(100).state.last_completed_run_id == completed.run_id
         assert any("fake:final_composer" in message.text for message in bot.messages)
+        assert any("Файлы результата сохранены" in message.text for message in bot.messages)
+        assert {document.filename for document in bot.documents} >= {
+            "final_answer.md",
+            "index.md",
+        }
 
     asyncio.run(scenario())
 
@@ -127,6 +132,7 @@ def test_telegram_status_returns_runtime_status() -> None:
         bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
         first = await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
         completed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
 
         response = await bridge.handle_text(chat_id=100, text="/status")
 
@@ -134,6 +140,8 @@ def test_telegram_status_returns_runtime_status() -> None:
         assert first.run_id == completed.job_id
         assert completed.run_id in bot.messages[-1].text
         assert "Последний run: completed." in bot.messages[-1].text
+        assert "artifacts:" in bot.messages[-1].text
+        assert "primary_artifact:" in bot.messages[-1].text
 
     asyncio.run(scenario())
 

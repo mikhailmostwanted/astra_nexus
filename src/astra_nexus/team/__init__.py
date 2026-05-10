@@ -1,3 +1,4 @@
+from astra_nexus.team.artifacts import TeamArtifact, TeamArtifactFormat, TeamArtifactType
 from astra_nexus.team.atmosphere import (
     AgentVoiceStyle,
     AtmosphereLevel,
@@ -94,6 +95,7 @@ from astra_nexus.team.runtime import (
 from astra_nexus.team.telegram_bridge import (
     RecordingTelegramBot,
     TelegramChatAction,
+    TelegramOutgoingDocument,
     TelegramOutgoingMessage,
     TelegramTeamBridge,
     TelegramTeamBridgeConfig,
@@ -135,6 +137,9 @@ __all__ = [
     "TeamMessageType",
     "TeamActiveRun",
     "TeamAtmosphereRenderer",
+    "TeamArtifact",
+    "TeamArtifactFormat",
+    "TeamArtifactType",
     "TeamAttachmentExtractionStatus",
     "TeamAttachmentManifest",
     "TeamAttachmentProcessor",
@@ -181,6 +186,7 @@ __all__ = [
     "TeamTaskBrief",
     "RecordingTelegramBot",
     "TelegramChatAction",
+    "TelegramOutgoingDocument",
     "TelegramOutgoingMessage",
     "TelegramTeamBridge",
     "TelegramTeamBridgeConfig",

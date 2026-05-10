@@ -28,6 +28,10 @@ class TeamRunRegistryEntry:
     execution_mode: str | None = None
     final_result: str | None = None
     error_message: str | None = None
+    artifacts_count: int = 0
+    artifacts_dir: Path | None = None
+    primary_artifact_path: Path | None = None
+    artifacts_index_path: Path | None = None
     corrupted: bool = False
     invalid: bool = False
     registry_error: str | None = None
@@ -194,6 +198,10 @@ class TeamRunRegistry:
             ),
             final_result=_string_or_none(payload.get("final_result")),
             error_message=_string_or_none(payload.get("error_message")),
+            artifacts_count=_int_or_zero(payload.get("artifacts_count")),
+            artifacts_dir=_path_or_none(payload.get("artifacts_dir")),
+            primary_artifact_path=_path_or_none(payload.get("primary_artifact_path")),
+            artifacts_index_path=_path_or_none(payload.get("artifacts_index_path")),
         )
 
     def _matches_session(
@@ -244,15 +252,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def _format_entry(entry: TeamRunRegistryEntry) -> str:
     finished = entry.finished_at.isoformat() if entry.finished_at is not None else "нет"
     created = entry.created_at.isoformat() if entry.created_at is not None else "нет"
-    return "\n".join(
-        [
-            f"- {entry.status}: {entry.title}",
-            f"  run_id: {entry.run_id}",
-            f"  created: {created}",
-            f"  finished: {finished}",
-            f"  workspace: {entry.workspace_path}",
-        ]
-    )
+    lines = [
+        f"- {entry.status}: {entry.title}",
+        f"  run_id: {entry.run_id}",
+        f"  created: {created}",
+        f"  finished: {finished}",
+        f"  workspace: {entry.workspace_path}",
+    ]
+    if entry.artifacts_count:
+        lines.append(f"  artifacts: {entry.artifacts_count}")
+        if entry.primary_artifact_path is not None:
+            lines.append(f"  primary_artifact: {entry.primary_artifact_path}")
+    return "\n".join(lines)
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -268,6 +279,19 @@ def _string_or_none(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _path_or_none(value: Any) -> Path | None:
+    if value is None or value == "":
+        return None
+    return Path(str(value))
 
 
 def _preview_text(text: str, *, limit: int = 180) -> str:

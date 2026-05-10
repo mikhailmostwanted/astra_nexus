@@ -5,6 +5,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from astra_nexus.team.artifacts import (
+    artifact_payload,
+    artifacts_index,
+    generate_output_artifacts,
+    primary_artifact,
+)
 from astra_nexus.team.attachments import (
     attachment_from_payload,
     attachment_payload,
@@ -60,6 +66,7 @@ class TeamRunWorkspace:
         agent_results_path = run_path / "agent_results"
         agent_results_path.mkdir(parents=True, exist_ok=True)
         save_attachments_to_workspace(run.attachments, run_path=run_path)
+        run.artifacts = generate_output_artifacts(run, run_path=run_path)
 
         self._write_json(run_path / "run.json", self._run_payload(run, run_path=run_path))
         self._write_json(run_path / "attachments.json", self._attachments_payload(run))
@@ -308,6 +315,8 @@ class TeamRunWorkspace:
 
     def _run_payload(self, run: TeamRun, *, run_path: Path) -> dict[str, Any]:
         metadata = dict(run.runtime_metadata)
+        primary = primary_artifact(run.artifacts)
+        index = artifacts_index(run.artifacts)
         return {
             "run_id": run.id,
             "status": run.status.value,
@@ -334,6 +343,11 @@ class TeamRunWorkspace:
             "final_approved": run.review_decision.approved
             if run.review_decision is not None
             else None,
+            "artifacts_count": len(run.artifacts),
+            "artifacts_dir": str(run_path / "artifacts") if run.artifacts else None,
+            "primary_artifact_path": str(primary.path) if primary is not None else None,
+            "artifacts_index_path": str(index.path) if index is not None else None,
+            "artifacts": [artifact_payload(artifact) for artifact in run.artifacts],
             "agents": self._agent_summaries(run),
         }
 

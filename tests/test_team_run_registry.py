@@ -108,6 +108,8 @@ def test_status_after_restart_like_state_uses_disk_registry(tmp_path) -> None:
         assert response.run_id == completed.run_id
         assert "Последний run: completed." in restarted_bot.messages[-1].text
         assert str(completed.workspace_path) in restarted_bot.messages[-1].text
+        assert "artifacts:" in restarted_bot.messages[-1].text
+        assert "primary_artifact:" in restarted_bot.messages[-1].text
 
     asyncio.run(scenario())
 
@@ -155,6 +157,27 @@ def test_telegram_bridge_answers_runs_from_registry(tmp_path) -> None:
         assert "Последние запуски команды" in bot.messages[-1].text
         assert "team_run_1" in bot.messages[-1].text
         assert "сделай краткий план AI-команды" in bot.messages[-1].text
+        assert "artifacts:" in bot.messages[-1].text
+
+    asyncio.run(scenario())
+
+
+def test_runs_handles_legacy_run_json_without_artifact_fields(tmp_path) -> None:
+    async def scenario() -> None:
+        root = tmp_path / "team_runs"
+        _write_run(root, "team_run_legacy", session_id="100", include_artifacts=False)
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake", workspace_root=root),
+        )
+
+        response = await bridge.handle_text(chat_id=100, text="/runs")
+
+        assert response.decision.intent.value == "runs_request"
+        assert response.status == TeamRuntimeStatus.IDLE
+        assert "team_run_legacy" in bot.messages[-1].text
+        assert "artifacts:" not in bot.messages[-1].text
 
     asyncio.run(scenario())
 
@@ -185,6 +208,7 @@ def _write_run(
     started_at: datetime | None = None,
     finished_at: datetime | None = None,
     session_id: str = "100",
+    include_artifacts: bool = True,
 ) -> None:
     created_at = created_at or datetime(2026, 1, 1, 12, tzinfo=UTC)
     run_dir = root / run_id
@@ -213,6 +237,15 @@ def _write_run(
             "provider": "fake",
         },
     }
+    if include_artifacts:
+        payload.update(
+            {
+                "artifacts_count": 2,
+                "artifacts_dir": str(run_dir / "artifacts"),
+                "primary_artifact_path": str(run_dir / "artifacts" / "final_answer.md"),
+                "artifacts_index_path": str(run_dir / "artifacts" / "index.md"),
+            }
+        )
     (run_dir / "run.json").write_text(
         json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",

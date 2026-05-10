@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from astra_nexus.utils.ids import new_id
 
 if TYPE_CHECKING:
+    from astra_nexus.team.artifacts import TeamArtifact
     from astra_nexus.team.attachments import TeamInputAttachment
     from astra_nexus.team.dialogue import TeamDialogueTurn
     from astra_nexus.team.execution_plan import TeamExecutionPlan
@@ -142,6 +143,7 @@ class TeamRun:
     revision_requests: list[TeamRevisionRequest] = field(default_factory=list)
     review_decision: TeamReviewDecision | None = None
     final_package: TeamFinalPackage | None = None
+    artifacts: list[TeamArtifact] = field(default_factory=list)
     revision_loops_count: int = 0
     final_text: str | None = None
     error_message: str | None = None

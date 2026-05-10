@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import json
 import random
 import tempfile
 from collections.abc import Callable, Iterable
@@ -95,6 +96,14 @@ class TelegramOutgoingMessage:
 
 
 @dataclass(frozen=True)
+class TelegramOutgoingDocument:
+    chat_id: int
+    path: Path
+    filename: str
+    caption: str | None = None
+
+
+@dataclass(frozen=True)
 class TelegramChatAction:
     chat_id: int
     action: str
@@ -103,6 +112,7 @@ class TelegramChatAction:
 class RecordingTelegramBot:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.messages: list[TelegramOutgoingMessage] = []
+        self.documents: list[TelegramOutgoingDocument] = []
         self.chat_actions: list[TelegramChatAction] = []
 
     async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> TelegramOutgoingMessage:
@@ -117,6 +127,23 @@ class RecordingTelegramBot:
 
     async def send_chat_action(self, chat_id: int, action: str, **kwargs: Any) -> None:
         self.chat_actions.append(TelegramChatAction(chat_id=chat_id, action=action))
+
+    async def send_document(
+        self,
+        chat_id: int,
+        document: Any,
+        **kwargs: Any,
+    ) -> TelegramOutgoingDocument:
+        path = _document_path(document)
+        filename = kwargs.get("filename") or kwargs.get("file_name") or path.name
+        outgoing = TelegramOutgoingDocument(
+            chat_id=chat_id,
+            path=path,
+            filename=filename,
+            caption=kwargs.get("caption"),
+        )
+        self.documents.append(outgoing)
+        return outgoing
 
 
 class _LivePreviewProvider(FakeTeamProvider):
@@ -425,6 +452,39 @@ class TelegramTeamBridge:
             return
         await self.bot.send_message(chat_id=message.chat_id, text=message.text)
 
+    async def _send_document(
+        self,
+        *,
+        chat_id: int,
+        path: Path,
+        caption: str | None = None,
+    ) -> None:
+        if not path.exists() or not path.is_file():
+            return
+        send_document = getattr(self.bot, "send_document", None)
+        if send_document is None:
+            return
+        if isinstance(self.bot, RecordingTelegramBot):
+            await self.bot.send_document(
+                chat_id=chat_id,
+                document=path,
+                filename=path.name,
+                caption=caption,
+            )
+            return
+
+        document: Any = path
+        try:
+            from aiogram.types import FSInputFile
+
+            document = FSInputFile(path)
+        except Exception:
+            document = path
+
+        result = send_document(chat_id=chat_id, document=document, caption=caption)
+        if asyncio.iscoroutine(result):
+            await result
+
     async def _send_typing(self, chat_id: int) -> None:
         send_chat_action = getattr(self.bot, "send_chat_action", None)
         if send_chat_action is None:
@@ -718,6 +778,7 @@ class TelegramTeamBridge:
                     send_typing=True,
                 )
             )
+            await self._send_completed_artifacts(chat_id=chat_id, snapshot=snapshot)
         elif snapshot.status == TeamJobStatus.FAILED:
             await self._send_log(
                 text="run_failed",
@@ -850,6 +911,10 @@ class TelegramTeamBridge:
             lines.append(f"finished: {entry.finished_at.isoformat()}")
         if entry.status == "completed":
             lines.append(f"Последний результат: {_preview_text(entry.final_result or '')}")
+            if entry.artifacts_count:
+                lines.append(f"artifacts: {entry.artifacts_count}")
+                if entry.primary_artifact_path is not None:
+                    lines.append(f"primary_artifact: {entry.primary_artifact_path}")
         elif entry.status == "failed":
             lines.append("Последний результат: задача завершилась с ошибкой.")
         elif entry.status == "cancelled":
@@ -871,7 +936,56 @@ class TelegramTeamBridge:
                     f"  workspace: {entry.workspace_path}",
                 ]
             )
+            if entry.artifacts_count:
+                lines.append(f"  artifacts: {entry.artifacts_count}")
+                if entry.primary_artifact_path is not None:
+                    lines.append(f"  primary_artifact: {entry.primary_artifact_path}")
         return "\n".join(lines)
+
+    async def _send_completed_artifacts(
+        self,
+        *,
+        chat_id: int,
+        snapshot: TeamJobSnapshot,
+    ) -> None:
+        payload = self._workspace_run_payload(snapshot.workspace_path)
+        if not payload:
+            return
+
+        artifacts_count = _int_or_zero(payload.get("artifacts_count"))
+        artifacts_dir = _path_or_none(payload.get("artifacts_dir"))
+        primary_artifact_path = _path_or_none(payload.get("primary_artifact_path"))
+        artifacts_index_path = _path_or_none(payload.get("artifacts_index_path"))
+        if not artifacts_count or artifacts_dir is None:
+            return
+
+        lines = [
+            f"Файлы результата сохранены: {artifacts_dir}",
+            f"artifacts: {artifacts_count}",
+        ]
+        if primary_artifact_path is not None:
+            lines.append(f"primary_artifact: {primary_artifact_path}")
+        await self._send(
+            TelegramOutgoingMessage(
+                chat_id=chat_id,
+                text="\n".join(lines),
+                send_typing=True,
+            )
+        )
+
+        for path in (primary_artifact_path, artifacts_index_path):
+            if path is not None:
+                await self._send_document(chat_id=chat_id, path=path)
+
+    def _workspace_run_payload(self, workspace_path: Path | None) -> dict[str, Any]:
+        if workspace_path is None:
+            return {}
+        run_json_path = workspace_path / "run.json"
+        try:
+            payload = json.loads(run_json_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
 
     def _session_id(self, chat_id: int) -> str:
         return str(chat_id)
@@ -1291,6 +1405,28 @@ def _print_new_messages(messages: list[TelegramOutgoingMessage], printed_count: 
         label = "Лог" if outgoing.channel == TeamMessageChannel.LOG_CHAT else "Основной чат"
         print(f"[{label}] {outgoing.text}")
     return len(messages)
+
+
+def _document_path(document: Any) -> Path:
+    if isinstance(document, Path):
+        return document
+    path = getattr(document, "path", None)
+    if path is not None:
+        return Path(path)
+    return Path(str(document))
+
+
+def _int_or_zero(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _path_or_none(value: Any) -> Path | None:
+    if value is None or value == "":
+        return None
+    return Path(str(value))
 
 
 def _preview_text(text: str, *, limit: int = 180) -> str:
