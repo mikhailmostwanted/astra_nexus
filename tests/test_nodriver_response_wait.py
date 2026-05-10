@@ -35,6 +35,7 @@ class SequenceWaitClient(ChatGPTClient):
         super().__init__(settings=settings, session=FakeSession())
         self.snapshots = list(snapshots)
         self.sleep_calls: list[float] = []
+        self.idle_without_final_artifact_calls = 0
 
     async def _response_wait_snapshot(self, tab: object) -> ResponseWaitSnapshot:
         if len(self.snapshots) > 1:
@@ -44,6 +45,20 @@ class SequenceWaitClient(ChatGPTClient):
     async def _response_wait_sleep(self, seconds: float) -> None:
         self.sleep_calls.append(seconds)
         await asyncio.sleep(0)
+
+    async def _write_idle_without_final_text_artifacts(
+        self,
+        tab: object,
+        *,
+        debug_context: dict,
+        turn_baseline: ResponseTurnBaseline,
+    ) -> dict[str, str]:
+        self.idle_without_final_artifact_calls += 1
+        workspace_path = Path(debug_context["workspace_path"])
+        html_path = workspace_path / "debug" / "nodriver_response_wait_manual.html"
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text("<article>Думаю</article>", encoding="utf-8")
+        return {"assistant_turn_html_path": str(html_path)}
 
 
 def snapshot(
@@ -57,6 +72,7 @@ def snapshot(
     assistant_indexes: list[int] | None = None,
     user_count: int = 0,
     last_user_index: int | None = None,
+    assistant_turns: list[dict] | None = None,
 ) -> ResponseWaitSnapshot:
     return ResponseWaitSnapshot(
         assistant_messages=messages,
@@ -69,7 +85,57 @@ def snapshot(
         assistant_message_indexes=assistant_indexes or list(range(len(messages))),
         user_messages_count=user_count,
         last_user_message_index=last_user_index,
+        assistant_turns=assistant_turns or [],
     )
+
+
+def assistant_turn(
+    *,
+    index: int,
+    final_text: str,
+    raw_text: str = "",
+    final_source: str = "assistant_root_text",
+    thought_preview: str = "",
+    rejected_reason: str = "",
+) -> dict:
+    return {
+        "index": index,
+        "role": "assistant",
+        "id": f"assistant:{index}",
+        "finalText": final_text,
+        "text": final_text,
+        "textLength": len(final_text),
+        "textPreview": final_text,
+        "rawTextPreview": raw_text or final_text,
+        "finalCandidatePreviews": (
+            [
+                {
+                    "source": final_source,
+                    "selector": "div.markdown",
+                    "textLength": len(final_text),
+                    "textPreview": final_text,
+                }
+            ]
+            if final_text
+            else []
+        ),
+        "thoughtCandidatePreviews": (
+            [
+                {
+                    "selector": ".result-thinking",
+                    "textLength": len(thought_preview),
+                    "textPreview": thought_preview,
+                }
+            ]
+            if thought_preview
+            else []
+        ),
+        "rejectedCandidateReasons": (
+            [{"source": "visible_text", "selector": "span", "reason": rejected_reason}]
+            if rejected_reason
+            else []
+        ),
+    }
 
 
 def test_response_wait_returns_last_segment_only_after_final_idle(tmp_path: Path) -> None:
@@ -192,6 +258,268 @@ def test_response_wait_selects_segments_after_current_user_turn(tmp_path: Path) 
 
     assert result.final_answer == "final current turn"
     assert result.assistant_segments == ["final current turn"]
+
+
+def test_response_wait_uses_final_candidate_when_turn_has_thought_block(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        nodriver_response_timeout_seconds=0,
+        nodriver_response_idle_confirm_seconds=0,
+    )
+    turn = assistant_turn(
+        index=1,
+        final_text="Astra Nexus online.",
+        raw_text="Думаю\nAstra Nexus online.",
+        thought_preview="Думаю",
+    )
+    client = SequenceWaitClient(
+        settings=settings,
+        snapshots=[
+            snapshot(
+                ["Astra Nexus online."],
+                generating=False,
+                prompt_available=True,
+                send_idle=True,
+                assistant_indexes=[1],
+                user_count=1,
+                last_user_index=0,
+                assistant_turns=[turn],
+            ),
+        ],
+    )
+
+    result = asyncio.run(
+        client._wait_for_response_completion(
+            object(),
+            response_count_before=0,
+            turn_baseline=ResponseTurnBaseline(assistant_count_before=0),
+            debug_context={"workspace_path": tmp_path},
+        )
+    )
+
+    assert result.final_answer == "Astra Nexus online."
+    debug_payload = json.loads(
+        (tmp_path / "debug" / "nodriver_response_wait_manual.json").read_text(encoding="utf-8")
+    )
+    assert debug_payload["thought_candidate_previews"][0]["textPreview"] == "Думаю"
+    assert debug_payload["final_candidate_previews"][0]["textPreview"] == "Astra Nexus online."
+
+
+def test_response_wait_thought_only_turn_fails_with_debug_not_success(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        nodriver_response_timeout_seconds=0,
+        nodriver_response_idle_confirm_seconds=0,
+        nodriver_response_max_empty_wait_seconds=0.001,
+    )
+    turn = assistant_turn(
+        index=1,
+        final_text="",
+        raw_text="Думаю",
+        thought_preview="Думаю",
+        rejected_reason="thought_or_reasoning_candidate",
+    )
+    client = SequenceWaitClient(
+        settings=settings,
+        snapshots=[
+            snapshot(
+                [""],
+                generating=False,
+                prompt_available=True,
+                send_idle=True,
+                assistant_indexes=[1],
+                user_count=1,
+                last_user_index=0,
+                assistant_turns=[turn],
+            ),
+        ],
+    )
+
+    with pytest.raises(NoDriverTimeoutError) as exc:
+        asyncio.run(
+            client._wait_for_response_completion(
+                object(),
+                response_count_before=0,
+                turn_baseline=ResponseTurnBaseline(assistant_count_before=0),
+                debug_context={"workspace_path": tmp_path},
+            )
+        )
+
+    debug_path = tmp_path / "debug" / "nodriver_response_wait_manual.json"
+    html_path = tmp_path / "debug" / "nodriver_response_wait_manual.html"
+    payload = json.loads(debug_path.read_text(encoding="utf-8"))
+    assert exc.value.details["timeout_reason"] == "idle_without_final_text"
+    assert payload["detected_phase"] == "stuck_unknown"
+    assert payload["assistant_segments"] == []
+    assert payload["assistant_turn_html_path"] == str(html_path)
+    assert html_path.exists()
+    assert client.idle_without_final_artifact_calls == 1
+
+
+def test_response_wait_finds_final_answer_from_markdown_candidate(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        nodriver_response_timeout_seconds=0,
+        nodriver_response_idle_confirm_seconds=0,
+    )
+    turn = assistant_turn(
+        index=1,
+        final_text="Final from markdown",
+        final_source="markdown_prose",
+    )
+    client = SequenceWaitClient(
+        settings=settings,
+        snapshots=[
+            snapshot(
+                ["Final from markdown"],
+                generating=False,
+                prompt_available=True,
+                send_idle=True,
+                assistant_indexes=[1],
+                user_count=1,
+                last_user_index=0,
+                assistant_turns=[turn],
+            ),
+        ],
+    )
+
+    result = asyncio.run(
+        client._wait_for_response_completion(
+            object(),
+            response_count_before=0,
+            turn_baseline=ResponseTurnBaseline(assistant_count_before=0),
+            debug_context={"workspace_path": tmp_path},
+        )
+    )
+
+    assert result.final_answer == "Final from markdown"
+
+
+def test_response_wait_uses_last_final_assistant_segment_after_user(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        nodriver_response_timeout_seconds=0,
+        nodriver_response_idle_confirm_seconds=0,
+    )
+    client = SequenceWaitClient(
+        settings=settings,
+        snapshots=[
+            snapshot(
+                ["", "actual final"],
+                generating=False,
+                prompt_available=True,
+                send_idle=True,
+                assistant_indexes=[1, 2],
+                user_count=1,
+                last_user_index=0,
+                assistant_turns=[
+                    assistant_turn(
+                        index=1, final_text="", raw_text="Думаю", thought_preview="Думаю"
+                    ),
+                    assistant_turn(index=2, final_text="actual final"),
+                ],
+            ),
+        ],
+    )
+
+    result = asyncio.run(
+        client._wait_for_response_completion(
+            object(),
+            response_count_before=0,
+            turn_baseline=ResponseTurnBaseline(assistant_count_before=0),
+            debug_context={"workspace_path": tmp_path},
+        )
+    )
+
+    assert result.final_answer == "actual final"
+    assert result.assistant_segments == ["actual final"]
+
+
+def test_response_wait_does_not_use_hidden_text_candidate_as_final(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        nodriver_response_timeout_seconds=0,
+        nodriver_response_idle_confirm_seconds=0,
+    )
+    turn = assistant_turn(
+        index=1,
+        final_text="visible final",
+        raw_text="hidden final visible final",
+        rejected_reason="hidden_candidate",
+    )
+    client = SequenceWaitClient(
+        settings=settings,
+        snapshots=[
+            snapshot(
+                ["visible final"],
+                generating=False,
+                prompt_available=True,
+                send_idle=True,
+                assistant_indexes=[1],
+                user_count=1,
+                last_user_index=0,
+                assistant_turns=[turn],
+            ),
+        ],
+    )
+
+    result = asyncio.run(
+        client._wait_for_response_completion(
+            object(),
+            response_count_before=0,
+            turn_baseline=ResponseTurnBaseline(assistant_count_before=0),
+            debug_context={"workspace_path": tmp_path},
+        )
+    )
+
+    assert result.final_answer == "visible final"
+    debug_payload = json.loads(
+        (tmp_path / "debug" / "nodriver_response_wait_manual.json").read_text(encoding="utf-8")
+    )
+    assert debug_payload["rejected_candidate_reasons"][0]["reason"] == "hidden_candidate"
+
+
+def test_response_wait_does_not_return_user_prompt_as_answer(tmp_path: Path) -> None:
+    settings = Settings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        nodriver_response_timeout_seconds=0,
+        nodriver_response_idle_confirm_seconds=0,
+    )
+    client = SequenceWaitClient(
+        settings=settings,
+        snapshots=[
+            snapshot(
+                ["Astra Nexus online."],
+                generating=False,
+                prompt_available=True,
+                send_idle=True,
+                assistant_indexes=[2],
+                user_count=1,
+                last_user_index=1,
+                assistant_turns=[assistant_turn(index=2, final_text="Astra Nexus online.")],
+            ),
+        ],
+    )
+
+    result = asyncio.run(
+        client._wait_for_response_completion(
+            object(),
+            response_count_before=0,
+            turn_baseline=ResponseTurnBaseline(assistant_count_before=0),
+            debug_context={"workspace_path": tmp_path},
+        )
+    )
+
+    assert result.final_answer == "Astra Nexus online."
+    assert result.final_answer != "Ответь ровно так: Astra Nexus online."
 
 
 def test_response_wait_progress_marks_idle_without_answer_as_stuck_unknown() -> None:

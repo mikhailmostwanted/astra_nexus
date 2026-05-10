@@ -34,6 +34,10 @@ from astra_nexus.brain.nodriver.selectors import (
     SEND_BUTTON_SELECTORS,
     STOP_BUTTON_SELECTORS,
 )
+from astra_nexus.brain.nodriver.turn_probe import (
+    build_turn_dump_probe_script,
+    normalize_turn_items,
+)
 from astra_nexus.config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -92,6 +96,7 @@ class ResponseWaitSnapshot:
     aria_busy: bool = False
     streaming_indicators_count: int = 0
     thinking_indicators_count: int = 0
+    assistant_turns: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def latest_assistant_text(self) -> str:
@@ -104,6 +109,30 @@ class ResponseWaitSnapshot:
     @property
     def latest_assistant_text_preview(self) -> str:
         return _compact_preview(self.latest_assistant_text, limit=180)
+
+    @property
+    def latest_assistant_turn(self) -> dict[str, Any]:
+        return self.assistant_turns[-1] if self.assistant_turns else {}
+
+    @property
+    def raw_assistant_text_preview(self) -> str:
+        value = self.latest_assistant_turn.get("rawTextPreview")
+        return str(value or self.latest_assistant_text_preview)
+
+    @property
+    def final_candidate_previews(self) -> list[dict[str, Any]]:
+        value = self.latest_assistant_turn.get("finalCandidatePreviews")
+        return list(value) if isinstance(value, list) else []
+
+    @property
+    def thought_candidate_previews(self) -> list[dict[str, Any]]:
+        value = self.latest_assistant_turn.get("thoughtCandidatePreviews")
+        return list(value) if isinstance(value, list) else []
+
+    @property
+    def rejected_candidate_reasons(self) -> list[dict[str, Any]]:
+        value = self.latest_assistant_turn.get("rejectedCandidateReasons")
+        return list(value) if isinstance(value, list) else []
 
     @property
     def final_idle(self) -> bool:
@@ -836,6 +865,10 @@ class ChatGPTClient:
         idle_started_at: float | None = None
         next_progress_log_at = started_at + progress_log_interval
         timeline: list[dict[str, Any]] = []
+        empty_idle_started_at: float | None = None
+        empty_idle_reload_attempted = False
+        empty_idle_reload_grace_seconds = max(5.0, idle_confirm_seconds)
+        empty_idle_fail_seconds = max_empty_wait if max_empty_wait is not None else 45.0
 
         async def record(
             state: ResponseWaitState,
@@ -845,6 +878,10 @@ class ChatGPTClient:
         ) -> None:
             elapsed = round(loop.time() - started_at, 3)
             segments = self._assistant_segments_for_current_turn(
+                snapshot,
+                turn_baseline=turn_baseline,
+            )
+            latest_turn = self._latest_current_assistant_turn(
                 snapshot,
                 turn_baseline=turn_baseline,
             )
@@ -870,6 +907,22 @@ class ChatGPTClient:
                 "current_turn_id": snapshot.current_turn_id,
                 "latest_assistant_text_chars": snapshot.latest_assistant_text_chars,
                 "latest_assistant_text_preview": snapshot.latest_assistant_text_preview,
+                "raw_assistant_text_preview": _turn_raw_text_preview(
+                    latest_turn,
+                    fallback=snapshot.raw_assistant_text_preview,
+                ),
+                "final_candidate_previews": _turn_list(
+                    latest_turn,
+                    "finalCandidatePreviews",
+                ),
+                "thought_candidate_previews": _turn_list(
+                    latest_turn,
+                    "thoughtCandidatePreviews",
+                ),
+                "rejected_candidate_reasons": _turn_list(
+                    latest_turn,
+                    "rejectedCandidateReasons",
+                ),
             }
             if reason:
                 entry["reason"] = reason
@@ -879,6 +932,10 @@ class ChatGPTClient:
             while True:
                 snapshot = await self._response_wait_snapshot(tab)
                 segments = self._assistant_segments_for_current_turn(
+                    snapshot,
+                    turn_baseline=turn_baseline,
+                )
+                current_assistant_turns = self._assistant_turns_for_current_turn(
                     snapshot,
                     turn_baseline=turn_baseline,
                 )
@@ -895,7 +952,19 @@ class ChatGPTClient:
                         final_idle_detected=False,
                         timeout_reason="hard_timeout",
                     )
-                    self._write_response_wait_debug(debug_context, details)
+                    debug_path = self._response_wait_debug_path(debug_context)
+                    if snapshot.final_idle and current_assistant_turns:
+                        details.update(
+                            await self._write_idle_without_final_text_artifacts(
+                                tab,
+                                debug_context=debug_context,
+                                turn_baseline=turn_baseline,
+                            )
+                        )
+                        details["detected_phase"] = "stuck_unknown"
+                    if debug_path is not None:
+                        details["debug_artifact_path"] = str(debug_path)
+                    self._write_response_wait_debug(debug_context, details, path=debug_path)
                     raise NoDriverTimeoutError(
                         "Истекло время ожидания финального idle-состояния ChatGPT Web.",
                         stage="chatgpt.response.wait.started",
@@ -910,7 +979,12 @@ class ChatGPTClient:
                     and max_empty_wait > 0
                     and now - started_at >= max_empty_wait
                 ):
-                    await record(ResponseWaitState.FAILED, snapshot, reason="empty_wait_timeout")
+                    timeout_reason = (
+                        "idle_without_final_text"
+                        if snapshot.final_idle and current_assistant_turns
+                        else "empty_wait_timeout"
+                    )
+                    await record(ResponseWaitState.FAILED, snapshot, reason=timeout_reason)
                     details = self._response_wait_debug_payload(
                         response_count_before=response_count_before,
                         turn_baseline=turn_baseline,
@@ -918,11 +992,33 @@ class ChatGPTClient:
                         segments=segments,
                         timeline=timeline,
                         final_idle_detected=False,
-                        timeout_reason="empty_wait_timeout",
+                        timeout_reason=timeout_reason,
+                        detected_phase=(
+                            "stuck_unknown" if timeout_reason == "idle_without_final_text" else None
+                        ),
                     )
-                    self._write_response_wait_debug(debug_context, details)
+                    debug_path = self._response_wait_debug_path(debug_context)
+                    if timeout_reason == "idle_without_final_text":
+                        details.update(
+                            await self._write_idle_without_final_text_artifacts(
+                                tab,
+                                debug_context=debug_context,
+                                turn_baseline=turn_baseline,
+                            )
+                        )
+                    if debug_path is not None:
+                        details["debug_artifact_path"] = str(debug_path)
+                    self._write_response_wait_debug(debug_context, details, path=debug_path)
+                    message = "ChatGPT Web не показал новый assistant segment за отведённое время."
+                    if timeout_reason == "idle_without_final_text":
+                        message = (
+                            "ChatGPT Web завершил UI idle, но финальный текст assistant "
+                            "не найден в DOM."
+                        )
+                    if debug_path is not None:
+                        message = f"{message} Debug: {debug_path}"
                     raise NoDriverTimeoutError(
-                        "ChatGPT Web не показал новый assistant segment за отведённое время.",
+                        message,
                         stage="chatgpt.response.wait.started",
                         url=await self.session.current_url(),
                         page_title=await self.session.current_title(),
@@ -931,6 +1027,69 @@ class ChatGPTClient:
 
                 state = self._response_wait_state(snapshot, segments=segments)
                 await record(state, snapshot)
+                if not segments and snapshot.final_idle and current_assistant_turns:
+                    if empty_idle_started_at is None:
+                        empty_idle_started_at = now
+                    empty_idle_elapsed = now - empty_idle_started_at
+                    if (
+                        not empty_idle_reload_attempted
+                        and empty_idle_elapsed >= empty_idle_reload_grace_seconds
+                    ):
+                        empty_idle_reload_attempted = True
+                        await record(
+                            ResponseWaitState.WAITING_FOR_FINAL_IDLE,
+                            snapshot,
+                            reason="reload_after_empty_idle",
+                        )
+                        tab = await self._reload_current_response_page(tab, debug_context)
+                        idle_started_at = None
+                        await self._response_wait_sleep(2.0)
+                        continue
+                    if empty_idle_elapsed >= empty_idle_fail_seconds:
+                        await record(
+                            ResponseWaitState.FAILED,
+                            snapshot,
+                            reason="idle_without_final_text",
+                        )
+                        details = self._response_wait_debug_payload(
+                            response_count_before=response_count_before,
+                            turn_baseline=turn_baseline,
+                            snapshot=snapshot,
+                            segments=segments,
+                            timeline=timeline,
+                            final_idle_detected=True,
+                            timeout_reason="idle_without_final_text",
+                            detected_phase="stuck_unknown",
+                        )
+                        debug_path = self._response_wait_debug_path(debug_context)
+                        details.update(
+                            await self._write_idle_without_final_text_artifacts(
+                                tab,
+                                debug_context=debug_context,
+                                turn_baseline=turn_baseline,
+                            )
+                        )
+                        if debug_path is not None:
+                            details["debug_artifact_path"] = str(debug_path)
+                        self._write_response_wait_debug(debug_context, details, path=debug_path)
+                        message = (
+                            "ChatGPT Web завершил UI idle, но финальный текст assistant "
+                            "не найден в DOM."
+                        )
+                        if debug_path is not None:
+                            message = f"{message} Debug: {debug_path}"
+                        exc = NoDriverTimeoutError(
+                            message,
+                            stage="chatgpt.response.wait.started",
+                            url=await self.session.current_url(),
+                            page_title=await self.session.current_title(),
+                            details=details,
+                        )
+                        if debug_path is not None:
+                            exc.debug_report_path = str(debug_path)
+                        raise exc
+                else:
+                    empty_idle_started_at = None
                 if progress_log_interval > 0 and now >= next_progress_log_at:
                     progress_payload = self._response_wait_progress_payload(
                         debug_context=debug_context,
@@ -1095,25 +1254,72 @@ class ChatGPTClient:
         *,
         turn_baseline: ResponseTurnBaseline,
     ) -> list[str]:
-        messages = snapshot.assistant_messages
-        indexes = snapshot.assistant_message_indexes
-        if (
-            snapshot.user_messages_count > turn_baseline.user_count_before
-            and snapshot.last_user_message_index is not None
-            and len(indexes) == len(messages)
-        ):
-            segments = [
-                message
-                for message, index in zip(messages, indexes, strict=False)
-                if index > int(snapshot.last_user_message_index)
-            ]
+        turns = self._assistant_turns_for_current_turn(
+            snapshot,
+            turn_baseline=turn_baseline,
+        )
+        if turns:
+            segments = [str(turn.get("finalText") or turn.get("text") or "") for turn in turns]
         else:
-            segments = messages[turn_baseline.assistant_count_before :]
+            segments = []
+        if not turns and not snapshot.assistant_turns:
+            messages = snapshot.assistant_messages
+            indexes = snapshot.assistant_message_indexes
+            if (
+                snapshot.user_messages_count > turn_baseline.user_count_before
+                and snapshot.last_user_message_index is not None
+                and len(indexes) == len(messages)
+            ):
+                segments = [
+                    message
+                    for message, index in zip(messages, indexes, strict=False)
+                    if index > int(snapshot.last_user_message_index)
+                ]
+            else:
+                segments = messages[turn_baseline.assistant_count_before :]
         return [
             segment
             for segment in segments
             if segment.strip() and not _is_thinking_label_only(segment)
         ]
+
+    def _assistant_turns_for_current_turn(
+        self,
+        snapshot: ResponseWaitSnapshot,
+        *,
+        turn_baseline: ResponseTurnBaseline,
+    ) -> list[dict[str, Any]]:
+        if not snapshot.assistant_turns:
+            return []
+        if (
+            snapshot.user_messages_count > turn_baseline.user_count_before
+            and snapshot.last_user_message_index is not None
+        ):
+            return [
+                turn
+                for turn in snapshot.assistant_turns
+                if _int_or_default(turn.get("index"), -1) > int(snapshot.last_user_message_index)
+            ]
+        if (
+            len(snapshot.assistant_turns) == len(snapshot.assistant_messages)
+            and turn_baseline.assistant_count_before >= 0
+        ):
+            return snapshot.assistant_turns[turn_baseline.assistant_count_before :]
+        return snapshot.assistant_turns
+
+    def _latest_current_assistant_turn(
+        self,
+        snapshot: ResponseWaitSnapshot,
+        *,
+        turn_baseline: ResponseTurnBaseline,
+    ) -> dict[str, Any]:
+        turns = self._assistant_turns_for_current_turn(
+            snapshot,
+            turn_baseline=turn_baseline,
+        )
+        if turns:
+            return turns[-1]
+        return snapshot.latest_assistant_turn
 
     def _response_wait_state(
         self,
@@ -1146,8 +1352,18 @@ class ChatGPTClient:
                 prompt_available=False,
                 send_button_idle=False,
             )
+        turn_payload = normalize_turn_items(result.get("turnProbe") or {})
+        assistant_turns = turn_payload["assistant_items"]
+        user_turns = turn_payload["user_items"]
+        assistant_messages = [
+            str(item.get("finalText") or item.get("text") or "") for item in assistant_turns
+        ]
+        assistant_indexes = [
+            _int_or_default(item.get("index"), index) for index, item in enumerate(assistant_turns)
+        ]
+        last_user = user_turns[-1] if user_turns else None
         return ResponseWaitSnapshot(
-            assistant_messages=[str(message) for message in result.get("assistantMessages") or []],
+            assistant_messages=assistant_messages,
             is_generating=bool(result.get("isGenerating")),
             stop_button_visible=bool(result.get("stopButtonVisible")),
             prompt_available=bool(result.get("promptAvailable")),
@@ -1156,15 +1372,21 @@ class ChatGPTClient:
             continue_required=bool(result.get("continueRequired")),
             detected_model=_str_or_none(result.get("detectedModel")),
             detected_reasoning_mode=_str_or_none(result.get("detectedReasoningMode")),
-            assistant_message_ids=[str(item) for item in result.get("assistantMessageIds") or []],
-            assistant_message_indexes=[
-                _int_or_default(item, index)
-                for index, item in enumerate(result.get("assistantMessageIndexes") or [])
+            assistant_message_ids=[
+                str(item.get("id") or f"assistant:{index}")
+                for index, item in enumerate(assistant_turns)
             ],
-            user_messages_count=_int_or_default(result.get("userMessagesCount"), 0),
-            last_user_message_id=_str_or_none(result.get("lastUserMessageId")),
-            last_user_message_index=_optional_int(result.get("lastUserMessageIndex")),
-            current_turn_id=_str_or_none(result.get("currentTurnId")),
+            assistant_message_indexes=assistant_indexes,
+            user_messages_count=len(user_turns),
+            last_user_message_id=(
+                _str_or_none(last_user.get("id")) if isinstance(last_user, dict) else None
+            ),
+            last_user_message_index=(
+                _optional_int(last_user.get("index")) if isinstance(last_user, dict) else None
+            ),
+            current_turn_id=(
+                _str_or_none(last_user.get("id")) if isinstance(last_user, dict) else None
+            ),
             stop_button_count=_int_or_default(result.get("stopButtonCount"), 0),
             send_button_state=str(result.get("sendButtonState") or "unknown"),
             composer_disabled=bool(result.get("composerDisabled")),
@@ -1178,6 +1400,7 @@ class ChatGPTClient:
                 result.get("thinkingIndicatorsCount"),
                 0,
             ),
+            assistant_turns=assistant_turns,
         )
 
     async def _safe_response_wait_snapshot(self, tab: Any) -> ResponseWaitSnapshot:
@@ -1210,6 +1433,14 @@ class ChatGPTClient:
         turn_baseline = turn_baseline or ResponseTurnBaseline(
             assistant_count_before=response_count_before
         )
+        latest_turn = self._latest_current_assistant_turn(
+            snapshot,
+            turn_baseline=turn_baseline,
+        )
+        current_turns = self._assistant_turns_for_current_turn(
+            snapshot,
+            turn_baseline=turn_baseline,
+        )
         payload: dict[str, Any] = {
             "response_count_before": response_count_before,
             "response_count_after": len(snapshot.assistant_messages),
@@ -1223,6 +1454,16 @@ class ChatGPTClient:
             "final_segment_index": len(segments) - 1 if segments else None,
             "latest_assistant_text_chars": snapshot.latest_assistant_text_chars,
             "latest_assistant_text_preview": snapshot.latest_assistant_text_preview,
+            "raw_assistant_text_preview": _turn_raw_text_preview(
+                latest_turn,
+                fallback=snapshot.raw_assistant_text_preview,
+            ),
+            "final_candidate_previews": _turn_list(latest_turn, "finalCandidatePreviews"),
+            "thought_candidate_previews": _turn_list(latest_turn, "thoughtCandidatePreviews"),
+            "rejected_candidate_reasons": _turn_list(latest_turn, "rejectedCandidateReasons"),
+            "current_assistant_turns": [
+                _compact_turn_debug(turn) for turn in current_turns[-5:] if isinstance(turn, dict)
+            ],
             "last_snapshot": {
                 "stop_button_count": snapshot.stop_button_count,
                 "send_button_state": snapshot.send_button_state,
@@ -1249,23 +1490,14 @@ class ChatGPTClient:
         self,
         debug_context: dict[str, Any],
         payload: dict[str, Any],
-    ) -> None:
-        workspace_path = debug_context.get("workspace_path")
-        agent_id = str(debug_context.get("agent_id") or "manual")
-        step_id = str(debug_context.get("step_id") or "")
-        debug_dir = (
-            Path(workspace_path) / "debug"
-            if workspace_path is not None
-            else self.settings.data_dir / "debug" / "nodriver"
-        )
+        *,
+        path: Path | None = None,
+    ) -> Path | None:
+        path = path or self._response_wait_debug_path(debug_context)
+        if path is None:
+            return None
         try:
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            filename_stem = f"{agent_id}_{step_id}" if step_id else agent_id
-            safe_filename_stem = "".join(
-                character if character.isalnum() or character in {"_", "-"} else "_"
-                for character in filename_stem
-            )
-            path = debug_dir / f"nodriver_response_wait_{safe_filename_stem}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps(
                     {
@@ -1284,11 +1516,134 @@ class ChatGPTClient:
                 + "\n",
                 encoding="utf-8",
             )
+            return path
         except OSError:
             logger.warning("Could not write NoDriver response wait debug report", exc_info=True)
+            return None
+
+    def _response_wait_debug_path(self, debug_context: dict[str, Any]) -> Path | None:
+        workspace_path = debug_context.get("workspace_path")
+        agent_id = str(debug_context.get("agent_id") or "manual")
+        step_id = str(debug_context.get("step_id") or "")
+        debug_dir = (
+            Path(workspace_path) / "debug"
+            if workspace_path is not None
+            else self.settings.data_dir / "debug" / "nodriver"
+        )
+        filename_stem = f"{agent_id}_{step_id}" if step_id else agent_id
+        safe_filename_stem = "".join(
+            character if character.isalnum() or character in {"_", "-"} else "_"
+            for character in filename_stem
+        )
+        return debug_dir / f"nodriver_response_wait_{safe_filename_stem}.json"
+
+    async def _write_idle_without_final_text_artifacts(
+        self,
+        tab: Any,
+        *,
+        debug_context: dict[str, Any],
+        turn_baseline: ResponseTurnBaseline,
+    ) -> dict[str, str]:
+        paths: dict[str, str] = {}
+        latest_turn: dict[str, Any] = {}
+        try:
+            result = await evaluate_script(
+                tab,
+                build_turn_dump_probe_script(limit=12, include_html=True),
+            )
+            turn_payload = normalize_turn_items(result)
+            user_items = turn_payload["user_items"]
+            assistant_items = turn_payload["assistant_items"]
+            last_user_index = (
+                _optional_int(user_items[-1].get("index"))
+                if user_items and isinstance(user_items[-1], dict)
+                else None
+            )
+            if last_user_index is not None and len(user_items) > turn_baseline.user_count_before:
+                assistant_items = [
+                    item
+                    for item in assistant_items
+                    if _int_or_default(item.get("index"), -1) > last_user_index
+                ]
+            latest_turn = assistant_items[-1] if assistant_items else {}
+        except Exception as exc:
+            paths["assistant_turn_dom_error"] = f"{type(exc).__name__}: {exc}"
+
+        debug_path = self._response_wait_debug_path(debug_context)
+        html_path = debug_path.with_suffix(".html") if debug_path is not None else None
+        outer_html = str(latest_turn.get("outerHTML") or "")
+        if html_path is not None and outer_html:
+            try:
+                html_path.parent.mkdir(parents=True, exist_ok=True)
+                html_path.write_text(outer_html, encoding="utf-8")
+                paths["assistant_turn_html_path"] = str(html_path)
+            except OSError as exc:
+                paths["assistant_turn_html_error"] = f"{type(exc).__name__}: {exc}"
+
+        screenshot_path = await self._maybe_save_response_wait_screenshot(
+            debug_context,
+            tab,
+        )
+        if screenshot_path is not None:
+            paths["screenshot_path"] = str(screenshot_path)
+        return paths
+
+    async def _reload_current_response_page(
+        self,
+        tab: Any,
+        debug_context: dict[str, Any],
+    ) -> Any:
+        current_url = await self.session.current_url()
+        if current_url:
+            self._log_stage(
+                "chatgpt.response.wait.reload_after_empty_idle",
+                debug_context,
+                url=current_url,
+            )
+            try:
+                return await self.session.open_url(current_url)
+            except NoDriverProviderError:
+                raise
+            except Exception as exc:
+                logger.warning("Could not reload ChatGPT response page: %s", exc)
+        try:
+            await evaluate_script(tab, "window.location.reload()")
+        except Exception as exc:
+            logger.warning("Could not request ChatGPT page reload: %s", exc)
+        return tab
+
+    async def _maybe_save_response_wait_screenshot(
+        self,
+        debug_context: dict[str, Any],
+        tab: Any,
+    ) -> Path | None:
+        if not self.settings.nodriver_debug_screenshots:
+            return None
+        debug_path = self._response_wait_debug_path(debug_context)
+        if debug_path is None:
+            return None
+        workspace_path = debug_context.get("workspace_path")
+        if workspace_path is not None:
+            screenshot_path = debug_path.with_suffix(".png")
+        else:
+            screenshot_dir = Path(self.settings.nodriver_screenshots_dir).expanduser().resolve()
+            screenshot_path = screenshot_dir / f"{debug_path.stem}.png"
+        try:
+            screenshot_path.parent.mkdir(parents=True, exist_ok=True)
+            for method_name in ("save_screenshot", "get_screenshot_as_file"):
+                method = getattr(tab, method_name, None)
+                if method is None:
+                    continue
+                result = method(str(screenshot_path))
+                if asyncio.iscoroutine(result):
+                    await result
+                return screenshot_path
+        except Exception:
+            logger.warning("Could not write NoDriver response wait screenshot", exc_info=True)
+        return None
 
     def _build_response_wait_probe_script(self) -> str:
-        assistant_query = ASSISTANT_MESSAGE_QUERY
+        turn_probe_script = build_turn_dump_probe_script(limit=0, include_html=False)
         prompt_selectors_json = json.dumps(PROMPT_INPUT_SELECTORS, ensure_ascii=False)
         send_selectors_json = json.dumps(SEND_BUTTON_SELECTORS, ensure_ascii=False)
         stop_selectors_json = json.dumps(STOP_BUTTON_SELECTORS, ensure_ascii=False)
@@ -1298,7 +1653,7 @@ class ChatGPTClient:
   const promptSelectors = {prompt_selectors_json};
   const sendSelectors = {send_selectors_json};
   const stopSelectors = {stop_selectors_json};
-  const fallbackAssistantMessages = ({assistant_query});
+  const turnProbe = {turn_probe_script};
 
   function visible(node) {{
     if (!node) return false;
@@ -1330,80 +1685,6 @@ class ChatGPTClient:
     return nodes;
   }}
 
-  function textOf(node) {{
-    return (node && (node.innerText || node.textContent || '') || '').trim();
-  }}
-
-  function cleanMessageText(node, role) {{
-    if (!node) return '';
-    const clone = node.cloneNode(true);
-    for (const removable of clone.querySelectorAll('script, style, .sr-only')) {{
-      removable.remove();
-    }}
-    if (role === 'assistant') {{
-      for (const button of clone.querySelectorAll('button')) {{
-        const text = textOf(button).toLowerCase();
-        if (text.startsWith('thought for ') || text === 'thinking' || text === 'думаю') {{
-          button.remove();
-        }}
-      }}
-      for (const thinking of clone.querySelectorAll('.result-thinking')) {{
-        const text = textOf(thinking).toLowerCase();
-        if (!text || text.startsWith('thought for ') || text === 'думаю') {{
-          thinking.remove();
-        }}
-      }}
-    }}
-    return textOf(clone);
-  }}
-
-  function stableId(node, index) {{
-    return node.getAttribute('data-turn-id') ||
-      node.getAttribute('data-turn-id-container') ||
-      node.getAttribute('data-message-id') ||
-      node.getAttribute('data-testid') ||
-      node.id ||
-      `${{node.getAttribute('data-message-author-role') ||
-        node.getAttribute('data-turn') ||
-        'message'}}:${{index}}`;
-  }}
-
-  function messageItems() {{
-    let nodes = Array.from(
-      document.querySelectorAll('[data-turn="user"], [data-turn="assistant"]')
-    );
-    const usesTurnContainers = nodes.length > 0;
-    if (!nodes.length) {{
-      nodes = Array.from(document.querySelectorAll('[data-message-author-role]'));
-    }}
-    const hasExplicitRoles = nodes.length > 0;
-    if (!nodes.length) {{
-      nodes = Array.from(document.querySelectorAll('article'));
-    }}
-    if (!nodes.length) {{
-      return (fallbackAssistantMessages || []).map((text, index) => ({{
-        id: `assistant-fallback:${{index}}`,
-        role: 'assistant',
-        text,
-        index,
-      }}));
-    }}
-    return nodes
-      .map((node, index) => {{
-        const explicitRole = node.getAttribute('data-turn') ||
-          node.getAttribute('data-message-author-role');
-        const role = explicitRole ||
-          (hasExplicitRoles ? '' : 'assistant');
-        return {{
-          id: stableId(node, index),
-          role,
-          text: cleanMessageText(node, role),
-          index,
-        }};
-      }})
-      .filter((item) => item.text || (usesTurnContainers && item.role === 'assistant'));
-  }}
-
   function nodeLabel(node) {{
     const text = (node.innerText || node.textContent || '').trim();
     return [
@@ -1425,10 +1706,10 @@ class ChatGPTClient:
     return null;
   }}
 
-  const messages = messageItems();
-  const assistantItems = messages.filter((item) => item.role === 'assistant');
-  const userItems = messages.filter((item) => item.role === 'user');
-  const assistantMessages = assistantItems.map((item) => item.text);
+  const messages = Array.isArray(turnProbe.turns) ? turnProbe.turns : [];
+  const assistantItems = Array.isArray(turnProbe.assistantItems) ? turnProbe.assistantItems : [];
+  const userItems = Array.isArray(turnProbe.userItems) ? turnProbe.userItems : [];
+  const assistantMessages = assistantItems.map((item) => item.finalText || item.text || '');
   const assistantMessageIds = assistantItems.map((item) => item.id);
   const assistantMessageIndexes = assistantItems.map((item) => item.index);
   const lastUser = userItems.length ? userItems[userItems.length - 1] : null;
@@ -1526,6 +1807,7 @@ class ChatGPTClient:
     continueRequired,
     detectedModel,
     detectedReasoningMode: bodyText.includes('extended') ? 'extended' : null,
+    turnProbe,
   }};
 }})()
 """
@@ -1710,6 +1992,43 @@ def _compact_preview(text: str, *, limit: int) -> str:
     if len(compact) <= limit:
         return compact
     return f"{compact[: limit - 1].rstrip()}..."
+
+
+def _turn_raw_text_preview(turn: dict[str, Any], *, fallback: str = "") -> str:
+    value = turn.get("rawTextPreview") if isinstance(turn, dict) else None
+    return str(value or fallback)
+
+
+def _turn_list(turn: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    if not isinstance(turn, dict):
+        return []
+    value = turn.get(key)
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _compact_turn_debug(turn: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "index": turn.get("index"),
+        "role": turn.get("role"),
+        "id": turn.get("id"),
+        "data_turn": turn.get("dataTurn"),
+        "data_testid": turn.get("dataTestid"),
+        "aria_label": turn.get("ariaLabel"),
+        "text_length": turn.get("textLength"),
+        "text_preview": turn.get("textPreview"),
+        "raw_text_length": turn.get("rawTextLength"),
+        "raw_text_preview": turn.get("rawTextPreview"),
+        "html_length": turn.get("htmlLength"),
+        "class_names": turn.get("classNames"),
+        "selector_summary": turn.get("selectorSummary"),
+        "has_markdown_prose_blocks": bool(turn.get("hasMarkdownProseBlocks")),
+        "has_thinking_reasoning_blocks": bool(turn.get("hasThinkingReasoningBlocks")),
+        "has_hidden_aria_hidden_elements": bool(turn.get("hasHiddenAriaHiddenElements")),
+        "selected_final_candidate": turn.get("selectedFinalCandidate"),
+        "final_candidate_previews": _turn_list(turn, "finalCandidatePreviews"),
+        "thought_candidate_previews": _turn_list(turn, "thoughtCandidatePreviews"),
+        "rejected_candidate_reasons": _turn_list(turn, "rejectedCandidateReasons"),
+    }
 
 
 def _is_thinking_label_only(text: str) -> bool:

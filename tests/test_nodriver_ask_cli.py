@@ -7,6 +7,7 @@ from astra_nexus.brain.nodriver.ask import run
 from astra_nexus.brain.nodriver.exceptions import (
     NoDriverPromptBoxNotFoundError,
     NoDriverPromptInsertFailedError,
+    NoDriverTimeoutError,
 )
 from astra_nexus.config.settings import Settings
 
@@ -47,6 +48,19 @@ class PromptInsertFailingProvider:
         )
 
 
+class ResponseWaitFailingProvider:
+    async def ask(self, agent_id: str, prompt: str, context: dict | None = None):
+        error = NoDriverTimeoutError(
+            "ChatGPT Web завершил UI idle, но финальный текст assistant не найден в DOM.",
+            stage="chatgpt.response.wait.started",
+            details={
+                "debug_artifact_path": "data/debug/nodriver/nodriver_response_wait_manual.json"
+            },
+        )
+        error.debug_report_path = "data/debug/nodriver/nodriver_response_wait_manual.json"
+        raise error
+
+
 def test_nodriver_ask_cli_prints_structured_error(capsys) -> None:
     exit_code = asyncio.run(run(["Привет"], provider=FailingProvider()))
 
@@ -85,6 +99,16 @@ def test_nodriver_ask_cli_writes_prompt_insert_debug_report(
     assert payload["details"]["activeElement"]["id"] == "prompt-textarea"
     assert payload["details"]["dom_probe_summary"]["candidate_count"] == 13
     assert payload["details"]["attempts"][0]["method"] == "exec_command_insert_text"
+
+
+def test_nodriver_ask_cli_prints_response_wait_debug_report(capsys) -> None:
+    exit_code = asyncio.run(run(["Привет"], provider=ResponseWaitFailingProvider()))
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "status: response_timeout" in output
+    assert "stage: chatgpt.response.wait.started" in output
+    assert "debug_report: data/debug/nodriver/nodriver_response_wait_manual.json" in output
 
 
 def test_nodriver_ask_cli_prints_answer(capsys) -> None:

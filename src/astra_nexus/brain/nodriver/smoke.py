@@ -85,6 +85,11 @@ async def amain() -> int:
             print(f"url: {exc.url}")
         if exc.selector:
             print(f"selector: {exc.selector}")
+        debug_report_path = getattr(exc, "debug_report_path", None) or exc.details.get(
+            "debug_artifact_path"
+        )
+        if debug_report_path:
+            print(f"debug_report: {debug_report_path}")
         if isinstance(exc, NoDriverPromptBoxNotFoundError):
             if report_payload is None:
                 report_payload = {

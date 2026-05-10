@@ -37,7 +37,11 @@ async def run(argv: list[str] | None = None, *, provider: Any | None = None) -> 
         )
     except NoDriverProviderError as exc:
         error = exc
-        debug_report_path = _write_prompt_insert_debug_report(settings, exc)
+        debug_report_path = (
+            _write_prompt_insert_debug_report(settings, exc)
+            or getattr(exc, "debug_report_path", None)
+            or exc.details.get("debug_artifact_path")
+        )
         print(f"status: {exc.error_code}")
         print(f"stage: {exc.stage or 'unknown'}")
         print(f"message: {exc}")
