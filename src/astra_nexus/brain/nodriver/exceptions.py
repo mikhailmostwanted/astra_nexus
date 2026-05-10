@@ -158,6 +158,15 @@ class NoDriverPromptInsertFailedError(NoDriverProviderError):
     )
 
 
+class NoDriverArtifactDownloadError(NoDriverProviderError):
+    status = "requested_file_missing"
+    user_message = "ChatGPT Web не создал скачиваемый файл"
+    action = (
+        "проверь artifact_detector_debug.json и повтори задачу; ChatGPT должен показать "
+        "file card или download button"
+    )
+
+
 class NoDriverPageLoadError(NoDriverProviderError):
     status = "unavailable"
     user_message = "страница ChatGPT не загрузилась"

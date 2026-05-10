@@ -1305,12 +1305,22 @@ class TelegramTeamBridge:
         )
 
     def _failed_job_text(self, snapshot: TeamJobSnapshot) -> str:
+        payload = self._workspace_run_payload(snapshot.workspace_path)
+        if self._failed_requested_file_from_nodriver(payload):
+            lines = [
+                "Не получилось скачать файл из ChatGPT Web.",
+                "Я не нашёл file card или кнопку скачивания после ответа.",
+            ]
+            if snapshot.run_id:
+                lines.append(f"run_id: {snapshot.run_id}")
+            if snapshot.workspace_path:
+                lines.append(f"workspace: {snapshot.workspace_path}")
+            return "\n".join(lines)
         lines = ["Команда завершилась с ошибкой."]
         if snapshot.run_id:
             lines.append(f"run_id: {snapshot.run_id}")
         if snapshot.workspace_path:
             lines.append(f"workspace: {snapshot.workspace_path}")
-        payload = self._workspace_run_payload(snapshot.workspace_path)
         artifacts_count = _int_or_zero(payload.get("artifacts_count")) if payload else 0
         primary_artifact = _path_or_none(payload.get("primary_artifact_path")) if payload else None
         if artifacts_count:
@@ -1322,6 +1332,15 @@ class TelegramTeamBridge:
         if snapshot.run_id:
             lines.append(f"Можно продолжить: astra-nexus-team-resume {snapshot.run_id}")
         return "\n".join(lines)
+
+    def _failed_requested_file_from_nodriver(self, payload: dict[str, Any]) -> bool:
+        metadata = payload.get("runtime_metadata") if payload else None
+        if not isinstance(metadata, dict):
+            return False
+        if not metadata.get("output_requested_as_file"):
+            return False
+        provider = str(metadata.get("provider") or payload.get("provider") or "")
+        return provider.startswith("nodriver")
 
     def _task_started_reply(self) -> str:
         if self.config.atmosphere_mode in {"minimal", "result_snippet", "off"}:
@@ -1525,6 +1544,33 @@ class TelegramTeamBridge:
         if self._output_requested_as_file(snapshot):
             if not self.config.send_requested_files:
                 return
+            requested_path = self._downloaded_requested_file_path(
+                payload,
+                workspace_path=snapshot.workspace_path,
+            )
+            if requested_path is not None:
+                await self._send(
+                    TelegramOutgoingMessage(
+                        chat_id=chat_id,
+                        text="Готово, скачал файл из ChatGPT Web.",
+                        send_typing=True,
+                    )
+                )
+                await self._send_document(chat_id=chat_id, path=requested_path)
+                return
+            if self._nodriver_requested_file_expected(payload):
+                await self._send_requested_file_missing_log(snapshot=snapshot, payload=payload)
+                await self._send(
+                    TelegramOutgoingMessage(
+                        chat_id=chat_id,
+                        text=(
+                            "Не получилось скачать файл из ChatGPT Web. "
+                            "Я не нашёл file card или кнопку скачивания после ответа."
+                        ),
+                        send_typing=True,
+                    )
+                )
+                return
             requested_path = self._requested_artifact_path(payload)
             if requested_path is None:
                 return
@@ -1598,6 +1644,64 @@ class TelegramTeamBridge:
             return _path_or_none(artifact.get("path"))
         return None
 
+    def _downloaded_requested_file_path(
+        self,
+        payload: dict[str, Any],
+        *,
+        workspace_path: Path | None,
+    ) -> Path | None:
+        result = self._requested_file_download_result(payload, workspace_path=workspace_path)
+        if not result.get("success"):
+            return None
+        return _path_or_none(result.get("path"))
+
+    def _requested_file_download_result(
+        self,
+        payload: dict[str, Any],
+        *,
+        workspace_path: Path | None,
+    ) -> dict[str, Any]:
+        metadata = payload.get("runtime_metadata")
+        if isinstance(metadata, dict):
+            result = metadata.get("requested_file_download_result")
+            if isinstance(result, dict):
+                return result
+        result_payload = self._workspace_json(workspace_path, "requested_file_download_result.json")
+        return result_payload if isinstance(result_payload, dict) else {}
+
+    def _nodriver_requested_file_expected(self, payload: dict[str, Any]) -> bool:
+        metadata = payload.get("runtime_metadata")
+        provider = payload.get("provider")
+        if isinstance(metadata, dict):
+            provider = metadata.get("provider") or provider
+        return str(provider or "").startswith("nodriver")
+
+    async def _send_requested_file_missing_log(
+        self,
+        *,
+        snapshot: TeamJobSnapshot,
+        payload: dict[str, Any],
+    ) -> None:
+        if self.config.log_chat_id is None:
+            return
+        metadata = payload.get("runtime_metadata") if isinstance(payload, dict) else {}
+        result = (
+            metadata.get("requested_file_download_result") if isinstance(metadata, dict) else None
+        )
+        reason = result.get("reason") if isinstance(result, dict) else "missing_download_result"
+        await self._send(
+            TelegramOutgoingMessage(
+                chat_id=self.config.log_chat_id,
+                text=(
+                    "[Лог] requested_file_missing "
+                    f"(job_id={snapshot.job_id}; run_id={snapshot.run_id or 'pending'}; "
+                    f"session_id={snapshot.session_id}; workspace={snapshot.workspace_path}; "
+                    f"reason={reason})"
+                ),
+                channel=TeamMessageChannel.LOG_CHAT,
+            )
+        )
+
     def _workspace_run_payload(self, workspace_path: Path | None) -> dict[str, Any]:
         payload = self._workspace_json(workspace_path, "run.json")
         return payload if isinstance(payload, dict) else {}
@@ -1628,9 +1732,14 @@ class TelegramTeamBridge:
 
     def _technical_error_text(self, snapshot: TeamJobSnapshot) -> str | None:
         payload = self._workspace_run_payload(snapshot.workspace_path)
+        prefix = (
+            "requested_file_missing: " if self._failed_requested_file_from_nodriver(payload) else ""
+        )
         error = payload.get("error_message") if payload else None
         if error:
-            return str(error)
+            return f"{prefix}{error}"
+        if prefix:
+            return f"{prefix}{snapshot.error_message or 'downloadable file missing'}"
         return snapshot.error_message
 
     def _session_id(self, chat_id: int) -> str:

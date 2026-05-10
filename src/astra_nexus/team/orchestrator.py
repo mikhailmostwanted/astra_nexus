@@ -143,8 +143,13 @@ class AsyncTeamOrchestrator:
         user_task: str,
         *,
         attachments: Sequence[TeamInputAttachment] = (),
+        runtime_metadata: dict[str, Any] | None = None,
     ) -> TeamRunOutcome:
         team_run = TeamRun(user_task=user_task, attachments=list(attachments))
+        if runtime_metadata:
+            team_run.runtime_metadata.update(
+                {key: value for key, value in runtime_metadata.items() if value is not None}
+            )
         self._assign_execution_plan(team_run)
         self._initialize_review_protocol(team_run)
         self.runs.append(team_run)
@@ -572,7 +577,11 @@ class AsyncTeamOrchestrator:
         profile: AgentProfile,
         previous_results: Sequence[AgentResult],
     ) -> AgentPrompt:
-        return self.prompt_builder.build(
+        extra_instructions = (
+            *self.extra_instructions,
+            *self._requested_file_extra_instructions(team_run=team_run, profile=profile),
+        )
+        prompt = self.prompt_builder.build(
             profile=profile,
             context=AgentContext(
                 run_id=team_run.id,
@@ -588,9 +597,53 @@ class AsyncTeamOrchestrator:
                 revision_requests=tuple(team_run.revision_requests),
                 review_decision=team_run.review_decision,
                 workspace_path=self.workspace_path,
-                extra_instructions=self.extra_instructions,
+                extra_instructions=extra_instructions,
             ),
         )
+        prompt.metadata.update(self._requested_file_prompt_metadata(team_run, profile=profile))
+        return prompt
+
+    def _requested_file_extra_instructions(
+        self,
+        *,
+        team_run: TeamRun,
+        profile: AgentProfile,
+    ) -> tuple[str, ...]:
+        if profile.role != AgentRole.FINAL_COMPOSER:
+            return ()
+        if not team_run.runtime_metadata.get("output_requested_as_file"):
+            return ()
+        output_format = (
+            str(team_run.runtime_metadata.get("requested_output_format") or "file").strip().lower()
+        )
+        if output_format and not output_format.startswith("."):
+            output_format = f".{output_format}"
+        return (
+            "Requested file delivery:",
+            "Create an actual downloadable file in ChatGPT Web.",
+            f"Required extension: {output_format or 'requested file format'}.",
+            "Do not treat plain text as success when the user asked for a file.",
+            "The final turn must expose a file card, attachment, filename chip, download link, "
+            "or download button that can be clicked by the browser.",
+            "Keep the accompanying text short; the downloadable file is the deliverable.",
+        )
+
+    def _requested_file_prompt_metadata(
+        self,
+        team_run: TeamRun,
+        *,
+        profile: AgentProfile,
+    ) -> dict[str, Any]:
+        if profile.role != AgentRole.FINAL_COMPOSER:
+            return {}
+        if not team_run.runtime_metadata.get("output_requested_as_file"):
+            return {}
+        return {
+            "output_requested_as_file": True,
+            "requested_output_format": str(
+                team_run.runtime_metadata.get("requested_output_format") or "unknown"
+            ),
+        }
 
     async def _generate_with_timeout(
         self,

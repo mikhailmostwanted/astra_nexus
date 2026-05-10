@@ -66,6 +66,7 @@ class TeamRunWorkspace:
         agent_results_path = run_path / "agent_results"
         agent_results_path.mkdir(parents=True, exist_ok=True)
         save_attachments_to_workspace(run.attachments, run_path=run_path)
+        self._ensure_requested_file_workspace(run, run_path=run_path)
         run.artifacts = generate_output_artifacts(run, run_path=run_path)
 
         self._write_json(run_path / "run.json", self._run_payload(run, run_path=run_path))
@@ -559,6 +560,30 @@ class TeamRunWorkspace:
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    def _ensure_requested_file_workspace(self, run: TeamRun, *, run_path: Path) -> None:
+        metadata = run.runtime_metadata
+        if not metadata.get("output_requested_as_file") and not metadata.get(
+            "requested_file_download_result"
+        ):
+            return
+        requested_dir = run_path / "requested_files"
+        requested_dir.mkdir(parents=True, exist_ok=True)
+        request_path = run_path / "requested_file_request.json"
+        if not request_path.exists():
+            self._write_json(
+                request_path,
+                {
+                    "run_id": run.id,
+                    "user_task": run.user_task,
+                    "output_requested_as_file": bool(metadata.get("output_requested_as_file")),
+                    "requested_output_format": metadata.get("requested_output_format") or "unknown",
+                },
+            )
+        result = metadata.get("requested_file_download_result")
+        result_path = run_path / "requested_file_download_result.json"
+        if isinstance(result, dict) and not result_path.exists():
+            self._write_json(result_path, result)
 
     def _read_json(self, path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))

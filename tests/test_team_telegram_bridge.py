@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import sys
 from collections.abc import Sequence
 
@@ -18,7 +19,7 @@ from astra_nexus.team import (
 from astra_nexus.team import telegram_bridge as telegram_bridge_module
 from astra_nexus.team.attachments import TeamAttachmentProcessor
 from astra_nexus.team.fake_provider import FakeTeamProvider
-from astra_nexus.team.jobs import TeamJobStatus
+from astra_nexus.team.jobs import TeamJobSnapshot, TeamJobStatus
 from astra_nexus.team.models import AgentProfile, AgentResult
 from astra_nexus.team.prompting import AgentPrompt
 from astra_nexus.team.provider import TeamProvider, TeamProviderError, TeamProviderOutput
@@ -89,6 +90,24 @@ class TracebackLikeFailingProvider(TeamProvider):
         raise TeamProviderError(
             "Traceback (most recent call last):\nFile secret.py\ncontrolled low-level failure",
             agent_id=profile.profile_id,
+        )
+
+
+class RequestedFileMissingProvider(TeamProvider):
+    name = "nodriver_team"
+
+    async def generate(
+        self,
+        *,
+        profile: AgentProfile,
+        user_task: str,
+        previous_results: Sequence[AgentResult],
+        prompt: AgentPrompt | None = None,
+    ) -> str:
+        raise TeamProviderError(
+            "ChatGPT Web did not attach a downloadable file",
+            agent_id=profile.profile_id,
+            error_code="requested_file_missing",
         )
 
 
@@ -334,6 +353,128 @@ def test_telegram_requested_file_sends_only_requested_artifact(tmp_path) -> None
         ]
         assert "Готово, собрал файл. Проверь, всё лежит внутри." in main_texts
         assert [document.filename for document in bot.documents] == ["requested_output.txt"]
+
+    asyncio.run(scenario())
+
+
+def test_telegram_requested_file_prefers_downloaded_file_over_internal_artifacts(tmp_path) -> None:
+    async def scenario() -> None:
+        run_dir = tmp_path / "team_runs" / "team_run_file"
+        requested_dir = run_dir / "requested_files"
+        artifacts_dir = run_dir / "artifacts"
+        requested_dir.mkdir(parents=True)
+        artifacts_dir.mkdir(parents=True)
+        real_file = requested_dir / "real-report.docx"
+        real_file.write_bytes(b"docx bytes")
+        final_answer = artifacts_dir / "final_answer.md"
+        index = artifacts_dir / "index.md"
+        fallback = artifacts_dir / "requested_output.txt"
+        for path in (final_answer, index, fallback):
+            path.write_text(path.name, encoding="utf-8")
+        (run_dir / "run.json").write_text(
+            json.dumps(
+                {
+                    "run_id": "team_run_file",
+                    "status": "completed",
+                    "user_task": "сделай отчет docx файлом",
+                    "runtime_metadata": {
+                        "provider": "nodriver_team",
+                        "output_requested_as_file": True,
+                        "requested_output_format": "docx",
+                        "requested_file_download_result": {
+                            "success": True,
+                            "path": str(real_file),
+                            "filename": "real-report.docx",
+                            "extension": "docx",
+                            "size_bytes": real_file.stat().st_size,
+                        },
+                    },
+                    "artifacts_count": 3,
+                    "artifacts_dir": str(artifacts_dir),
+                    "primary_artifact_path": str(final_answer),
+                    "artifacts_index_path": str(index),
+                    "artifacts": [
+                        {
+                            "artifact_type": "final_answer",
+                            "format": "markdown",
+                            "path": str(final_answer),
+                        },
+                        {
+                            "artifact_type": "artifacts_index",
+                            "format": "markdown",
+                            "path": str(index),
+                        },
+                        {
+                            "artifact_type": "requested_output",
+                            "format": "text",
+                            "path": str(fallback),
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="nodriver",
+                workspace_root=tmp_path / "team_runs",
+                log_chat_id=200,
+                send_internal_artifacts=True,
+            ),
+        )
+
+        await bridge._send_completed_artifacts(
+            chat_id=100,
+            snapshot=TeamJobSnapshot(
+                job_id="team_job_1",
+                session_id="100",
+                status=TeamJobStatus.COMPLETED,
+                user_task="сделай отчет docx файлом",
+                run_id="team_run_file",
+                workspace_path=run_dir,
+            ),
+        )
+
+        assert [document.filename for document in bot.documents] == ["real-report.docx"]
+
+    asyncio.run(scenario())
+
+
+def test_telegram_requested_file_failure_has_short_user_message_and_logs_details(tmp_path) -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="nodriver",
+                workspace_root=tmp_path / "team_runs",
+                atmosphere_mode="minimal",
+                log_chat_id=200,
+            ),
+            provider_factory=RequestedFileMissingProvider,
+        )
+
+        await bridge.handle_text(chat_id=100, text="сделай отчет docx файлом")
+        failed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        main_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.MAIN_CHAT
+        ]
+        log_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.LOG_CHAT
+        ]
+        assert failed.status == TeamJobStatus.FAILED
+        assert any("Не получилось скачать файл из ChatGPT Web" in text for text in main_texts)
+        assert all("downloadable file" not in text for text in main_texts)
+        assert any("requested_file_missing" in text for text in log_texts)
 
     asyncio.run(scenario())
 

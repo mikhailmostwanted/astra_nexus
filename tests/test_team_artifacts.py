@@ -120,6 +120,34 @@ def test_requested_output_artifact_is_separate_from_internal_final_answer(tmp_pa
     assert requested[0]["path"].endswith("requested_output.txt")
 
 
+def test_requested_output_artifact_is_skipped_when_real_downloaded_file_exists(tmp_path) -> None:
+    outcome = asyncio.run(
+        AsyncTeamOrchestrator(provider=FakeTeamProvider()).run(
+            "сделай краткий план и пришли docx файлом",
+            runtime_metadata={
+                "output_requested_as_file": True,
+                "requested_output_format": "docx",
+                "requested_file_download_result": {
+                    "success": True,
+                    "path": str(tmp_path / "team_runs" / "downloaded.docx"),
+                    "filename": "downloaded.docx",
+                    "extension": "docx",
+                    "size_bytes": 10,
+                },
+            },
+        )
+    )
+    workspace = TeamRunWorkspace(root_path=tmp_path / "team_runs")
+
+    run_path = workspace.save(outcome.run)
+
+    assert not (run_path / "artifacts" / "requested_output.docx").exists()
+    run_payload = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
+    assert all(
+        artifact["artifact_type"] != "requested_output" for artifact in run_payload["artifacts"]
+    )
+
+
 def test_artifact_generation_does_not_import_nodriver(tmp_path) -> None:
     sys.modules.pop("astra_nexus.team.nodriver_provider", None)
     outcome = asyncio.run(AsyncTeamOrchestrator(provider=FakeTeamProvider()).run("собери итог"))

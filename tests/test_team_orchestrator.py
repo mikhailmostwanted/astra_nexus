@@ -64,6 +64,28 @@ def test_team_orchestrator_returns_final_composer_text() -> None:
     assert provider.calls[-1].previous_results_count == 5
 
 
+def test_requested_file_run_adds_downloadable_file_instruction_to_final_prompt() -> None:
+    provider = FakeTeamProvider()
+    orchestrator = AsyncTeamOrchestrator(provider=provider)
+
+    asyncio.run(
+        orchestrator.run(
+            "Собери отчет и пришли docx файлом",
+            runtime_metadata={
+                "output_requested_as_file": True,
+                "requested_output_format": "docx",
+            },
+        )
+    )
+
+    final_call = provider.calls[-1]
+    assert final_call.profile.role == AgentRole.FINAL_COMPOSER
+    assert final_call.prompt is not None
+    assert "downloadable file" in final_call.prompt.user_prompt
+    assert ".docx" in final_call.prompt.user_prompt
+    assert final_call.prompt.metadata["output_requested_as_file"] is True
+
+
 def test_team_run_fails_when_agent_provider_fails() -> None:
     provider = FakeTeamProvider(fail_on=AgentRole.CRITIC)
     orchestrator = AsyncTeamOrchestrator(provider=provider)

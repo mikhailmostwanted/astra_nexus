@@ -141,6 +141,12 @@ NoDriver — транспортный слой для работы с ChatGPT We
 
 Цель: научить Astra Nexus скачивать настоящие файлы, созданные ChatGPT Web.
 
+Статус: v1 реализован. Есть detector текущего assistant turn, debug dump,
+download manager с `requested_files/downloads/`, один retry при отсутствии file
+card/download button, workspace JSON и Telegram-отправка только реально скачанного
+requested file для NoDriver flow. Локальный `requested_output.*` оставлен как
+fallback/debug для non-NoDriver preview.
+
 Это один из главных этапов, потому что ChatGPT Web сам умеет создавать файлы. Astra не должна в основном сценарии подменять это локальной генерацией `requested_output.md`.
 
 Если пользователь просит файл, основной сценарий такой:

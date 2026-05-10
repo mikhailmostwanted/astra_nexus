@@ -15,7 +15,7 @@ from astra_nexus.team.intake import (
     TeamIntakeRouter,
 )
 from astra_nexus.team.messages import TeamMessageSink
-from astra_nexus.team.models import RunStatus, TeamRun, TeamRunOutcome, utc_now
+from astra_nexus.team.models import AgentRole, RunStatus, TeamRun, TeamRunOutcome, utc_now
 from astra_nexus.team.orchestrator import AsyncTeamOrchestrator
 from astra_nexus.team.provider import TeamProvider, TeamProviderError
 from astra_nexus.team.workspace import TeamRunWorkspace
@@ -164,10 +164,15 @@ class TeamConversationController:
     ) -> TeamRuntimeResponse:
         user_task = self._runtime_task_text(team_input=team_input, decision=decision)
         orchestrator = self._orchestrator()
+        run_metadata = self._run_metadata_from_input(team_input)
         active = TeamActiveRun(run_id="pending", user_task=user_task)
         self._register_started(active)
         try:
-            outcome = await orchestrator.run(user_task, attachments=team_input.attachments)
+            outcome = await orchestrator.run(
+                user_task,
+                attachments=team_input.attachments,
+                runtime_metadata=run_metadata,
+            )
         except TeamProviderError as exc:
             failed_run = orchestrator.runs[-1] if orchestrator.runs else None
             if failed_run is None:
@@ -180,7 +185,7 @@ class TeamConversationController:
             self.state.active_runs.pop(active.run_id, None)
             active.run_id = failed_run.id
             self._register_started(active)
-            self._apply_run_metadata(failed_run, self._run_metadata_from_input(team_input))
+            self._apply_run_metadata(failed_run, run_metadata)
             workspace_path = self._save(failed_run)
             self._register_failed(failed_run, workspace_path=workspace_path)
             self.runs.append(failed_run)
@@ -197,7 +202,7 @@ class TeamConversationController:
         self.state.active_runs.pop(active.run_id, None)
         active.run_id = outcome.run.id
         self._register_started(active)
-        self._apply_run_metadata(outcome.run, self._run_metadata_from_input(team_input))
+        self._apply_run_metadata(outcome.run, run_metadata)
         workspace_path = self._save(outcome.run)
         self._register_completed(outcome.run, workspace_path=workspace_path)
         self.runs.append(outcome.run)
@@ -338,9 +343,29 @@ class TeamConversationController:
 
     def _apply_run_metadata(self, run: TeamRun, metadata: dict[str, Any]) -> None:
         clean_metadata = {key: value for key, value in metadata.items() if value is not None}
+        clean_metadata.update(self._requested_file_metadata_from_results(run))
         clean_metadata.setdefault("provider", self.provider.name)
         clean_metadata.setdefault("execution_mode", str(run.execution_mode))
         run.runtime_metadata.update(clean_metadata)
+
+    def _requested_file_metadata_from_results(self, run: TeamRun) -> dict[str, Any]:
+        for result in reversed(run.results):
+            if result.profile.role != AgentRole.FINAL_COMPOSER:
+                continue
+            provider_response = result.metadata.get("provider_response")
+            if not isinstance(provider_response, dict):
+                return {}
+            copied: dict[str, Any] = {}
+            for key in (
+                "requested_file_download_result",
+                "requested_file_request_path",
+                "requested_file_download_result_path",
+                "artifact_detector_debug_path",
+            ):
+                if key in provider_response:
+                    copied[key] = provider_response[key]
+            return copied
+        return {}
 
     def _register_started(self, active: TeamActiveRun) -> None:
         self.state.active_runs[active.run_id] = active

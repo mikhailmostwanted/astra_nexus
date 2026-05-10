@@ -104,6 +104,35 @@ def test_nodriver_team_provider_passes_expected_context_to_brain_provider(tmp_pa
     assert context["workspace_path"] == str(tmp_path / "team_run_999")
 
 
+def test_nodriver_team_provider_passes_requested_file_context(tmp_path) -> None:
+    brain_provider = RecordingBrainProvider()
+    provider = NoDriverTeamProvider(brain_provider=brain_provider)
+    profile = default_profiles_by_role()[AgentRole.FINAL_COMPOSER]
+    prompt = AgentPrompt(
+        system_prompt="SYSTEM",
+        user_prompt="USER",
+        metadata={
+            "run_id": "team_run_file",
+            "workspace_path": str(tmp_path / "team_run_file"),
+            "output_requested_as_file": True,
+            "requested_output_format": "docx",
+        },
+    )
+
+    asyncio.run(
+        provider.generate(
+            profile=profile,
+            user_task="Собрать docx",
+            previous_results=(),
+            prompt=prompt,
+        )
+    )
+
+    context = brain_provider.calls[0]["context"]
+    assert context["output_requested_as_file"] is True
+    assert context["requested_output_format"] == "docx"
+
+
 def test_nodriver_team_provider_reports_no_parallel_support() -> None:
     provider = NoDriverTeamProvider(brain_provider=RecordingBrainProvider())
 

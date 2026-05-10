@@ -30,7 +30,20 @@ class TeamInputIntent(StrEnum):
     UNKNOWN = "unknown"
 
 
-REQUESTED_OUTPUT_FORMATS = {"md", "docx", "pdf", "txt", "unknown"}
+REQUESTED_OUTPUT_FORMATS = {
+    "docx",
+    "jpg",
+    "jpeg",
+    "md",
+    "pdf",
+    "png",
+    "pptx",
+    "txt",
+    "webp",
+    "xlsx",
+    "zip",
+    "unknown",
+}
 
 
 @dataclass(frozen=True)
@@ -72,8 +85,23 @@ def detect_requested_output_artifact(text: str) -> tuple[bool, str]:
     output_format = "unknown"
     if any(token in normalized for token in ("docx", ".docx", "ворд", "word")):
         output_format = "docx"
+    elif any(token in normalized for token in ("xlsx", ".xlsx", "excel", "эксель")):
+        output_format = "xlsx"
+    elif any(
+        token in normalized
+        for token in ("pptx", ".pptx", "powerpoint", "presentation", "презентац")
+    ):
+        output_format = "pptx"
     elif any(token in normalized for token in ("pdf", ".pdf", "пдф")):
         output_format = "pdf"
+    elif any(token in normalized for token in ("zip", ".zip", "архив")):
+        output_format = "zip"
+    elif any(token in normalized for token in ("png", ".png")):
+        output_format = "png"
+    elif any(token in normalized for token in ("jpg", ".jpg", "jpeg", ".jpeg")):
+        output_format = "jpg"
+    elif any(token in normalized for token in ("webp", ".webp")):
+        output_format = "webp"
     elif any(token in normalized for token in ("txt", ".txt", "текстовым файлом")):
         output_format = "txt"
     elif any(token in normalized for token in ("md", ".md", "markdown", "маркдаун")):
@@ -93,20 +121,29 @@ def detect_requested_output_artifact(text: str) -> tuple[bool, str]:
     )
     format_markers = (
         "сделай docx",
+        "сделай xlsx",
+        "сделай pptx",
         "сделай pdf",
         "сделай txt",
         "сделай md",
+        "сделай zip",
         "собери docx",
+        "собери xlsx",
+        "собери pptx",
         "собери pdf",
         "собери txt",
         "собери md",
+        "собери zip",
         "пришли docx",
+        "пришли xlsx",
+        "пришли pptx",
         "пришли pdf",
         "пришли txt",
         "пришли md",
+        "пришли zip",
     )
     requested = any(marker in normalized for marker in file_markers + format_markers)
-    if not requested and output_format in {"docx", "pdf"}:
+    if not requested and output_format in {"docx", "pdf", "xlsx", "pptx", "zip"}:
         requested = any(verb in normalized for verb in ("сделай", "собери", "подготовь"))
     return requested, output_format
 

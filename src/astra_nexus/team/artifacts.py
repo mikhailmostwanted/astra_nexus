@@ -263,6 +263,8 @@ def _requested_output_artifact(
     metadata = run.runtime_metadata
     if not metadata.get("output_requested_as_file"):
         return None
+    if _has_downloaded_requested_file(metadata):
+        return None
     output_format = str(metadata.get("requested_output_format") or "unknown").lower()
     if output_format not in {"md", "docx", "pdf", "txt"}:
         output_format = "txt"
@@ -324,6 +326,14 @@ def _write_pdf_artifact(*, artifacts_dir: Path, run_path: Path, text: str) -> Te
         size_bytes=path.stat().st_size,
         metadata={"requested_output": True, "requested_output_format": "pdf"},
     )
+
+
+def _has_downloaded_requested_file(metadata: dict[str, Any]) -> bool:
+    result = metadata.get("requested_file_download_result")
+    if not isinstance(result, dict) or not result.get("success"):
+        return False
+    path = result.get("path")
+    return bool(path)
 
 
 def _final_answer_markdown(run: TeamRun) -> str:

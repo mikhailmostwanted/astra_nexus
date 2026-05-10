@@ -5,6 +5,7 @@ import inspect
 import json
 
 from astra_nexus.team import (
+    AgentRole,
     FakeTeamProvider,
     TeamActiveRun,
     TeamConversationController,
@@ -15,6 +16,7 @@ from astra_nexus.team import (
     TeamRunWorkspace,
 )
 from astra_nexus.team import runtime_preview as runtime_preview_module
+from astra_nexus.team.provider import TeamProviderOutput
 
 
 def test_runtime_casual_chat_does_not_create_run() -> None:
@@ -63,6 +65,40 @@ def test_runtime_marks_requested_output_file_intent(tmp_path) -> None:
     run_payload = json.loads((response.workspace_path / "run.json").read_text(encoding="utf-8"))
     assert run_payload["runtime_metadata"]["output_requested_as_file"] is True
     assert run_payload["runtime_metadata"]["requested_output_format"] == "docx"
+
+
+def test_runtime_copies_downloaded_requested_file_metadata_from_final_provider(tmp_path) -> None:
+    class DownloadingProvider(FakeTeamProvider):
+        async def generate(self, **kwargs):
+            profile = kwargs["profile"]
+            if profile.role != AgentRole.FINAL_COMPOSER:
+                return await super().generate(**kwargs)
+            return TeamProviderOutput(
+                content="Файл готов.",
+                metadata={
+                    "requested_file_download_result": {
+                        "success": True,
+                        "path": str(tmp_path / "downloaded.docx"),
+                        "filename": "downloaded.docx",
+                        "extension": "docx",
+                        "size_bytes": 10,
+                    }
+                },
+            )
+
+    controller = TeamConversationController(
+        provider=DownloadingProvider(),
+        workspace=TeamRunWorkspace(root_path=tmp_path / "team_runs"),
+    )
+
+    response = asyncio.run(controller.handle("сделай краткий план и пришли docx"))
+
+    assert response.status == TeamRuntimeStatus.COMPLETED
+    run_payload = json.loads((response.workspace_path / "run.json").read_text(encoding="utf-8"))
+    assert run_payload["runtime_metadata"]["requested_file_download_result"]["success"] is True
+    assert all(
+        artifact["artifact_type"] != "requested_output" for artifact in run_payload["artifacts"]
+    )
 
 
 def test_runtime_status_request_reports_last_completed_run(tmp_path) -> None:

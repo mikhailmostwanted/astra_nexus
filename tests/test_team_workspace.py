@@ -51,3 +51,26 @@ def test_team_workspace_saves_run_report_files(tmp_path) -> None:
         assert "## Задача" in content
         assert "## Статус" in content
         assert "## Результат" in content
+
+
+def test_team_workspace_saves_requested_file_structure(tmp_path) -> None:
+    orchestrator = AsyncTeamOrchestrator(provider=FakeTeamProvider())
+    outcome = asyncio.run(
+        orchestrator.run(
+            "Собери отчет docx файлом",
+            runtime_metadata={
+                "output_requested_as_file": True,
+                "requested_output_format": "docx",
+            },
+        )
+    )
+    workspace = TeamRunWorkspace(root_path=tmp_path / "team_runs")
+
+    run_path = workspace.save(outcome.run)
+
+    assert (run_path / "requested_files").is_dir()
+    request_payload = json.loads(
+        (run_path / "requested_file_request.json").read_text(encoding="utf-8")
+    )
+    assert request_payload["run_id"] == outcome.run.id
+    assert request_payload["requested_output_format"] == "docx"

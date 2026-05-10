@@ -22,6 +22,7 @@ TRANSIENT_NODRIVER_ERROR_CODES = {
     "browser_connect_failed",
     "prompt_insert_failed",
     "chatgpt_ui_not_ready",
+    "requested_file_missing",
     "unavailable",
 }
 
@@ -146,6 +147,8 @@ class NoDriverTeamProvider(TeamProvider):
             "step_id": metadata.get("execution_step_id"),
             "agent_task_id": metadata.get("agent_task_id"),
             "attempt_number": metadata.get("attempt_number"),
+            "output_requested_as_file": bool(metadata.get("output_requested_as_file")),
+            "requested_output_format": metadata.get("requested_output_format"),
         }
 
     def _content(self, response: BrainResponse | Any) -> str:

@@ -9,6 +9,11 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from astra_nexus.brain.nodriver.artifact_detector import (
+    ArtifactDetectionResult,
+    artifact_detection_from_probe_payload,
+    build_artifact_detector_probe_script,
+)
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
 from astra_nexus.brain.nodriver.dom_probe import (
     LOGIN_STATE_PROBE_SCRIPT,
@@ -17,7 +22,13 @@ from astra_nexus.brain.nodriver.dom_probe import (
     login_state_from_probe,
     normalize_dom_probe_payload,
 )
+from astra_nexus.brain.nodriver.download_manager import (
+    NoDriverDownloadManager,
+    RequestedFileDownloadResult,
+    requested_file_dirs,
+)
 from astra_nexus.brain.nodriver.exceptions import (
+    NoDriverArtifactDownloadError,
     NoDriverChatGPTUINotReadyError,
     NoDriverLoginRequiredError,
     NoDriverPreferredModelError,
@@ -234,13 +245,47 @@ class ChatGPTClient:
                 reason=login_state.get("reason"),
             )
 
+        wait_result = await self._submit_prompt_and_wait(
+            tab,
+            prompt=prompt,
+            debug_context=debug_context,
+            login_state=login_state,
+            ensure_model=True,
+        )
+        response = self._response_from_wait_result(wait_result, debug_context=debug_context)
+        answer_metadata: dict[str, Any] = {
+            "structured_answer": wait_result.structured_answer,
+            "detected_model": wait_result.detected_model,
+            "detected_reasoning_mode": wait_result.detected_reasoning_mode,
+        }
+        if self._requested_file_required(debug_context):
+            response, answer_metadata = await self._complete_requested_file_flow(
+                tab,
+                first_response=response,
+                debug_context=debug_context,
+                answer_metadata=answer_metadata,
+            )
+        self.last_answer_metadata = answer_metadata
+        self._log_stage("chatgpt.response.parse.ok", debug_context)
+        return response
+
+    async def _submit_prompt_and_wait(
+        self,
+        tab: Any,
+        *,
+        prompt: str,
+        debug_context: dict[str, Any],
+        login_state: dict[str, Any] | None = None,
+        ensure_model: bool = False,
+    ) -> ResponseWaitResult:
         turn_baseline = ResponseTurnBaseline.from_snapshot(
             await self._safe_response_wait_snapshot(tab)
         )
         before_count = turn_baseline.assistant_count_before
-        await self._ensure_preferred_model(tab, debug_context)
+        if ensure_model:
+            await self._ensure_preferred_model(tab, debug_context)
         self._log_stage("chatgpt.prompt_box.search.started", debug_context)
-        await self._wait_for_prompt_box(tab, debug_context, login_state)
+        await self._wait_for_prompt_box(tab, debug_context, login_state or {})
 
         self._log_stage("chatgpt.prompt.insert.started", debug_context)
         await self._fill_prompt(tab, prompt)
@@ -264,22 +309,251 @@ class ChatGPTClient:
             debug_context=debug_context,
         )
         self._log_stage("chatgpt.response.wait.ok", debug_context)
+        return wait_result
 
+    def _response_from_wait_result(
+        self,
+        wait_result: ResponseWaitResult,
+        *,
+        debug_context: dict[str, Any],
+    ) -> str:
         self._log_stage("chatgpt.response.parse.started", debug_context)
         response = wait_result.final_answer
-        self.last_answer_metadata = {
-            "structured_answer": wait_result.structured_answer,
-            "detected_model": wait_result.detected_model,
-            "detected_reasoning_mode": wait_result.detected_reasoning_mode,
-        }
         if not response.strip():
             try:
                 response = parse_last_assistant_response(wait_result.assistant_segments)
             except NoDriverSelectorNotFoundError as exc:
                 exc.stage = exc.stage or "chatgpt.response.parse.started"
                 raise
-        self._log_stage("chatgpt.response.parse.ok", debug_context)
         return response
+
+    def _requested_file_required(self, debug_context: dict[str, Any]) -> bool:
+        return bool(debug_context.get("output_requested_as_file"))
+
+    async def _complete_requested_file_flow(
+        self,
+        tab: Any,
+        *,
+        first_response: str,
+        debug_context: dict[str, Any],
+        answer_metadata: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        workspace_path = self._requested_file_workspace_path(debug_context)
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        requested_dir, downloads_dir = requested_file_dirs(workspace_path)
+        requested_dir.mkdir(parents=True, exist_ok=True)
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        request_payload = self._requested_file_request_payload(debug_context)
+        self._write_requested_file_json(
+            workspace_path / "requested_file_request.json",
+            request_payload,
+        )
+
+        attempts: list[dict[str, Any]] = []
+        response = first_response
+        last_download_result = RequestedFileDownloadResult(
+            success=False,
+            reason="not_attempted",
+            downloads_dir=downloads_dir,
+        )
+        for attempt_number in (1, 2):
+            detection = await self._detect_requested_file_artifacts(tab)
+            attempts.append(
+                {
+                    "attempt_number": attempt_number,
+                    "detector": detection.as_dict(),
+                }
+            )
+            self._write_artifact_detector_debug(
+                workspace_path=workspace_path,
+                attempts=attempts,
+            )
+            if detection.selected is not None:
+                last_download_result = await self._download_requested_file_candidate(
+                    tab=tab,
+                    detection=detection,
+                    workspace_path=workspace_path,
+                    expected_extension=str(debug_context.get("requested_output_format") or ""),
+                )
+                self._write_requested_file_download_result(
+                    workspace_path=workspace_path,
+                    result=last_download_result,
+                    attempts=attempts,
+                )
+                if last_download_result.success:
+                    metadata = {
+                        **answer_metadata,
+                        "requested_file_download_result": last_download_result.as_dict(),
+                        "requested_file_request_path": str(
+                            workspace_path / "requested_file_request.json"
+                        ),
+                        "requested_file_download_result_path": str(
+                            workspace_path / "requested_file_download_result.json"
+                        ),
+                        "artifact_detector_debug_path": str(
+                            workspace_path / "artifact_detector_debug.json"
+                        ),
+                    }
+                    return response, metadata
+            else:
+                last_download_result = RequestedFileDownloadResult(
+                    success=False,
+                    reason="no_download_candidate",
+                    downloads_dir=downloads_dir,
+                )
+                self._write_requested_file_download_result(
+                    workspace_path=workspace_path,
+                    result=last_download_result,
+                    attempts=attempts,
+                )
+
+            if attempt_number == 1:
+                retry_context = {**debug_context, "requested_file_retry": True}
+                retry_prompt = self._requested_file_retry_prompt(debug_context)
+                retry_wait_result = await self._submit_prompt_and_wait(
+                    tab,
+                    prompt=retry_prompt,
+                    debug_context=retry_context,
+                    ensure_model=False,
+                )
+                response = self._response_from_wait_result(
+                    retry_wait_result,
+                    debug_context=retry_context,
+                )
+                answer_metadata = {
+                    **answer_metadata,
+                    "structured_answer": retry_wait_result.structured_answer,
+                    "detected_model": retry_wait_result.detected_model,
+                    "detected_reasoning_mode": retry_wait_result.detected_reasoning_mode,
+                }
+
+        details = {
+            "requested_file_request": request_payload,
+            "download_result": last_download_result.as_dict(),
+            "artifact_detector_debug_path": str(workspace_path / "artifact_detector_debug.json"),
+            "requested_file_download_result_path": str(
+                workspace_path / "requested_file_download_result.json"
+            ),
+            "attempts": attempts,
+        }
+        raise NoDriverArtifactDownloadError(
+            "ChatGPT Web не вернул реальный скачиваемый файл после повторной попытки.",
+            stage="chatgpt.artifact.download",
+            url=await self.session.current_url(),
+            page_title=await self.session.current_title(),
+            details=details,
+        )
+
+    async def _detect_requested_file_artifacts(self, tab: Any) -> ArtifactDetectionResult:
+        payload = await evaluate_script(tab, build_artifact_detector_probe_script())
+        return artifact_detection_from_probe_payload(payload)
+
+    async def _download_requested_file_candidate(
+        self,
+        *,
+        tab: Any,
+        detection: ArtifactDetectionResult,
+        workspace_path: Path,
+        expected_extension: str | None,
+    ) -> RequestedFileDownloadResult:
+        if detection.selected is None:
+            requested_dir, downloads_dir = requested_file_dirs(workspace_path)
+            return RequestedFileDownloadResult(
+                success=False,
+                reason="no_download_candidate",
+                downloads_dir=downloads_dir,
+            )
+        requested_dir, downloads_dir = requested_file_dirs(workspace_path)
+        manager = NoDriverDownloadManager(
+            downloads_dir=downloads_dir,
+            requested_dir=requested_dir,
+        )
+        return await manager.download_candidate(
+            tab=tab,
+            candidate=detection.selected,
+            expected_extension=expected_extension,
+        )
+
+    def _requested_file_workspace_path(self, debug_context: dict[str, Any]) -> Path:
+        workspace_path = debug_context.get("workspace_path")
+        if workspace_path is not None:
+            return Path(workspace_path)
+        run_id = str(debug_context.get("run_id") or "manual")
+        return Path(self.settings.data_dir) / "debug" / "nodriver" / "requested_files" / run_id
+
+    def _requested_file_request_payload(self, debug_context: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "run_id": debug_context.get("run_id"),
+            "task_id": debug_context.get("task_id"),
+            "task_prompt": debug_context.get("task_prompt"),
+            "agent_id": debug_context.get("agent_id"),
+            "agent_task_id": debug_context.get("agent_task_id"),
+            "requested_output_format": debug_context.get("requested_output_format"),
+            "output_requested_as_file": bool(debug_context.get("output_requested_as_file")),
+            "workspace_path": str(self._requested_file_workspace_path(debug_context)),
+        }
+
+    def _requested_file_retry_prompt(self, debug_context: dict[str, Any]) -> str:
+        output_format = str(debug_context.get("requested_output_format") or "file").lstrip(".")
+        return "\n".join(
+            [
+                "The previous response did not include a real downloadable file.",
+                "",
+                "Create an actual downloadable file in ChatGPT Web now.",
+                f"Required format/extension: .{output_format}.",
+                "Do not only describe the file.",
+                "Do not paste the file contents as the final answer.",
+                "Use ChatGPT's file creation/download UI so the result appears as a file card, "
+                "attachment, filename chip, or download button.",
+                "Return a short note only after the downloadable file is attached.",
+            ]
+        )
+
+    def _write_artifact_detector_debug(
+        self,
+        *,
+        workspace_path: Path,
+        attempts: list[dict[str, Any]],
+    ) -> Path | None:
+        payload = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "attempts": attempts,
+            "latest": attempts[-1] if attempts else None,
+        }
+        return self._write_requested_file_json(
+            workspace_path / "artifact_detector_debug.json",
+            payload,
+        )
+
+    def _write_requested_file_download_result(
+        self,
+        *,
+        workspace_path: Path,
+        result: RequestedFileDownloadResult,
+        attempts: list[dict[str, Any]],
+    ) -> Path | None:
+        payload = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            **result.as_dict(),
+            "attempts": attempts,
+        }
+        return self._write_requested_file_json(
+            workspace_path / "requested_file_download_result.json",
+            payload,
+        )
+
+    def _write_requested_file_json(self, path: Path, payload: dict[str, Any]) -> Path | None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
+            return path
+        except OSError:
+            logger.warning("Could not write requested file debug JSON: %s", path, exc_info=True)
+            return None
 
     async def _login_state(self, tab: Any) -> dict[str, Any]:
         try:

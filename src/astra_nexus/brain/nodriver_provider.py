@@ -116,12 +116,15 @@ class NoDriverProvider(BrainProvider):
         return {
             "task_id": task_id,
             "run_id": context.get("run_id"),
+            "task_prompt": context.get("task_prompt"),
             "agent_id": agent_id,
             "step_id": context.get("step_id"),
             "agent_task_id": context.get("agent_task_id"),
             "attempt_number": context.get("attempt_number"),
             "provider": self.name,
             "workspace_path": workspace_path,
+            "output_requested_as_file": bool(context.get("output_requested_as_file")),
+            "requested_output_format": context.get("requested_output_format"),
         }
 
     async def _write_debug_report(
