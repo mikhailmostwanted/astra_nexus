@@ -50,6 +50,9 @@ async def run(
                 else settings.team_agent_response_timeout_seconds
             ),
         ),
+        execution_mode=settings.team_execution_mode,
+        max_parallel_agents=settings.team_max_parallel_agents,
+        parallel_agent_timeout_seconds=settings.team_parallel_agent_timeout_seconds,
     )
 
     try:

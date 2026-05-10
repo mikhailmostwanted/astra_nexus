@@ -14,6 +14,13 @@ from astra_nexus.team.dialogue import (
     build_failed_turn,
     dialogue_turn_to_messages,
 )
+from astra_nexus.team.execution_plan import (
+    TeamExecutionMode,
+    TeamExecutionPlan,
+    TeamExecutionStep,
+    default_sequential_execution_plan,
+    execution_plan_for_mode,
+)
 from astra_nexus.team.messages import (
     NullTeamMessageSink,
     TeamMessageRenderer,
@@ -93,9 +100,17 @@ class AsyncTeamOrchestrator:
         retry_policy: TeamRetryPolicy | None = None,
         message_sink: TeamMessageSink | None = None,
         message_renderer: TeamMessageRenderer | None = None,
+        execution_mode: TeamExecutionMode | str = TeamExecutionMode.SEQUENTIAL,
+        execution_plan: TeamExecutionPlan | None = None,
+        max_parallel_agents: int = 2,
+        parallel_agent_timeout_seconds: float | None = 240.0,
     ) -> None:
         self.provider = provider
         self.pipeline = list(pipeline or DEFAULT_AGENT_PIPELINE)
+        self.requested_execution_mode = TeamExecutionMode(execution_mode)
+        self.requested_execution_plan = execution_plan
+        self.max_parallel_agents = max(1, max_parallel_agents)
+        self.parallel_agent_timeout_seconds = parallel_agent_timeout_seconds
         self.prompt_builder = prompt_builder or TeamPromptBuilder()
         self.workspace_path = Path(workspace_path) if workspace_path is not None else None
         self.extra_instructions = tuple(extra_instructions or ())
@@ -114,6 +129,7 @@ class AsyncTeamOrchestrator:
         attachments: Sequence[TeamInputAttachment] = (),
     ) -> TeamRunOutcome:
         team_run = TeamRun(user_task=user_task, attachments=list(attachments))
+        self._assign_execution_plan(team_run)
         self.runs.append(team_run)
         self._start_run(team_run)
         return await self._execute_run(team_run)
@@ -122,6 +138,7 @@ class AsyncTeamOrchestrator:
         self.runs.append(team_run)
         team_run.status = RunStatus.RUNNING
         team_run.completed_at = None
+        self._assign_execution_plan(team_run)
         self._append_event(
             team_run,
             RunEventType.RUN_STARTED,
@@ -132,15 +149,11 @@ class AsyncTeamOrchestrator:
 
     async def _execute_run(self, team_run: TeamRun) -> TeamRunOutcome:
         try:
-            for role in self.pipeline:
-                if self._role_completed(team_run, role):
-                    continue
-                await self._run_agent(
-                    team_run=team_run,
-                    profile=self.profiles_by_role[role],
-                    agent_task=self._task_for_role(team_run, role),
-                )
+            await self._execute_plan(team_run)
         except TeamProviderError:
+            raise
+        except asyncio.CancelledError:
+            self._cancel_run(team_run, reason="cancelled")
             raise
 
         final_text = team_run.results[-1].content if team_run.results else ""
@@ -167,12 +180,138 @@ class AsyncTeamOrchestrator:
             payload={"status": team_run.status.value},
         )
 
+    def _assign_execution_plan(self, team_run: TeamRun) -> None:
+        plan = self._effective_execution_plan()
+        team_run.execution_mode = plan.mode
+        team_run.execution_plan = plan
+
+    def _effective_execution_plan(self) -> TeamExecutionPlan:
+        requested = self.requested_execution_plan or execution_plan_for_mode(
+            self.requested_execution_mode,
+            pipeline=self.pipeline,
+            max_parallel_agents=self.max_parallel_agents,
+            parallel_agent_timeout_seconds=self.parallel_agent_timeout_seconds,
+        )
+        requested = requested.with_limits(
+            max_parallel_agents=self.max_parallel_agents,
+            parallel_agent_timeout_seconds=self.parallel_agent_timeout_seconds,
+        )
+        if requested.mode == TeamExecutionMode.PARALLEL and not self.provider.supports_parallel:
+            return default_sequential_execution_plan(
+                self.pipeline,
+                max_parallel_agents=1,
+                parallel_agent_timeout_seconds=None,
+            )
+        return requested
+
+    async def _execute_plan(self, team_run: TeamRun) -> None:
+        plan = team_run.execution_plan or self._effective_execution_plan()
+        for step in plan.steps:
+            if step.mode == TeamExecutionMode.PARALLEL and len(step.roles) > 1:
+                await self._run_parallel_step(team_run=team_run, step=step, plan=plan)
+            else:
+                for role in step.roles:
+                    await self._run_planned_role(
+                        team_run=team_run,
+                        role=role,
+                        step=step,
+                    )
+            self._sort_run_agent_state(team_run)
+
+    async def _run_parallel_step(
+        self,
+        *,
+        team_run: TeamRun,
+        step: TeamExecutionStep,
+        plan: TeamExecutionPlan,
+    ) -> None:
+        previous_results = tuple(team_run.results)
+        semaphore = asyncio.Semaphore(plan.max_parallel_agents)
+
+        async def run_role(role: AgentRole) -> None:
+            async with semaphore:
+                run_agent = self._run_planned_role(
+                    team_run=team_run,
+                    role=role,
+                    step=step,
+                    previous_results_override=previous_results,
+                )
+                timeout = plan.parallel_agent_timeout_seconds
+                if timeout is not None and timeout > 0:
+                    try:
+                        await asyncio.wait_for(run_agent, timeout=timeout)
+                    except TimeoutError as exc:
+                        agent_task = self._task_for_role(team_run, role) or AgentTask(
+                            run_id=team_run.id,
+                            profile=self.profiles_by_role[role],
+                            user_task=team_run.user_task,
+                            dependencies=step.dependencies_for(role),
+                            execution_step_id=step.id,
+                            execution_mode=step.mode.value,
+                        )
+                        provider_error = TeamProviderError(
+                            "истекло время ожидания parallel agent step",
+                            agent_id=self.profiles_by_role[role].profile_id,
+                            error_code="response_timeout",
+                            error_kind=TeamErrorKind.TRANSIENT_PROVIDER,
+                            original_error=exc,
+                        )
+                        self._fail_agent_run(
+                            team_run=team_run,
+                            agent_task=agent_task,
+                            exc=provider_error,
+                        )
+                        raise provider_error from exc
+                    return
+                await run_agent
+
+        tasks = [asyncio.create_task(run_role(role)) for role in step.roles]
+        try:
+            await asyncio.gather(*tasks)
+        except asyncio.CancelledError:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._cancel_agent_tasks(team_run, roles=step.roles, reason="cancelled")
+            raise
+        except Exception:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._cancel_agent_tasks(team_run, roles=step.roles, reason="cancelled")
+            raise
+
+    async def _run_planned_role(
+        self,
+        *,
+        team_run: TeamRun,
+        role: AgentRole,
+        step: TeamExecutionStep,
+        previous_results_override: Sequence[AgentResult] | None = None,
+    ) -> None:
+        if self._role_completed(team_run, role):
+            return
+        await self._run_agent(
+            team_run=team_run,
+            profile=self.profiles_by_role[role],
+            agent_task=self._task_for_role(team_run, role),
+            dependencies=step.dependencies_for(role),
+            execution_step_id=step.id,
+            execution_mode=step.mode,
+            previous_results_override=previous_results_override,
+        )
+
     async def _run_agent(
         self,
         *,
         team_run: TeamRun,
         profile: AgentProfile,
         agent_task: AgentTask | None = None,
+        dependencies: Sequence[AgentRole] = (),
+        execution_step_id: str | None = None,
+        execution_mode: TeamExecutionMode = TeamExecutionMode.SEQUENTIAL,
+        previous_results_override: Sequence[AgentResult] | None = None,
     ) -> None:
         agent_task = agent_task or AgentTask(
             run_id=team_run.id,
@@ -181,6 +320,9 @@ class AsyncTeamOrchestrator:
         )
         if agent_task not in team_run.tasks:
             team_run.tasks.append(agent_task)
+        agent_task.dependencies = tuple(dependencies)
+        agent_task.execution_step_id = execution_step_id
+        agent_task.execution_mode = execution_mode.value
         agent_task.status = AgentTaskStatus.RUNNING
         agent_task.started_at = utc_now()
         agent_task.completed_at = None
@@ -218,7 +360,11 @@ class AsyncTeamOrchestrator:
                     },
                 )
 
-            previous_results = tuple(team_run.results)
+            previous_results = (
+                tuple(previous_results_override)
+                if previous_results_override is not None
+                else tuple(team_run.results)
+            )
             try:
                 prompt = self._build_prompt(
                     team_run=team_run,
@@ -278,7 +424,13 @@ class AsyncTeamOrchestrator:
             task_id=agent_task.id,
             profile=profile,
             content=content,
-            metadata={"provider": self.provider.name, "prompt": prompt.as_dict()},
+            metadata={
+                "provider": self.provider.name,
+                "prompt": prompt.as_dict(),
+                "execution_step_id": execution_step_id,
+                "execution_mode": execution_mode.value,
+                "dependencies": [role.value for role in dependencies],
+            },
         )
         team_run.results.append(result)
         agent_task.status = AgentTaskStatus.COMPLETED
@@ -473,6 +625,38 @@ class AsyncTeamOrchestrator:
         for message in dialogue_turn_to_messages(turn):
             team_run.messages.append(message)
             self.message_sink.publish(message)
+
+    def _cancel_run(self, team_run: TeamRun, *, reason: str) -> None:
+        if team_run.status == RunStatus.FAILED:
+            return
+        self._cancel_agent_tasks(
+            team_run,
+            roles=tuple(task.profile.role for task in team_run.tasks),
+            reason=reason,
+        )
+        team_run.status = RunStatus.CANCELLED
+        team_run.error_message = reason
+        team_run.completed_at = utc_now()
+
+    def _cancel_agent_tasks(
+        self,
+        team_run: TeamRun,
+        *,
+        roles: Sequence[AgentRole],
+        reason: str,
+    ) -> None:
+        role_set = set(roles)
+        for task in team_run.tasks:
+            if task.profile.role not in role_set or task.status != AgentTaskStatus.RUNNING:
+                continue
+            task.status = AgentTaskStatus.FAILED
+            task.completed_at = utc_now()
+            task.error_message = reason
+
+    def _sort_run_agent_state(self, team_run: TeamRun) -> None:
+        order = {role: index for index, role in enumerate(self.pipeline)}
+        team_run.tasks.sort(key=lambda task: order.get(task.profile.role, len(order)))
+        team_run.results.sort(key=lambda result: order.get(result.profile.role, len(order)))
 
     def _role_completed(self, team_run: TeamRun, role: AgentRole) -> bool:
         return any(result.profile.role == role for result in team_run.results)

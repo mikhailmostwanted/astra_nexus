@@ -16,6 +16,12 @@ from astra_nexus.team.dialogue import (
     dialogue_transcript_payload,
     dialogue_turn_from_payload,
 )
+from astra_nexus.team.execution_plan import (
+    TeamExecutionMode,
+    execution_plan_from_payload,
+    execution_plan_payload,
+    execution_timeline_markdown,
+)
 from astra_nexus.team.messages import TeamMessage, TeamMessageChannel, TeamMessageType
 from astra_nexus.team.models import (
     AgentResult,
@@ -46,6 +52,11 @@ class TeamRunWorkspace:
         self._write_json(run_path / "results.json", self._results_payload(run.results))
         self._write_json(run_path / "events.json", self._events_payload(run.events))
         self._write_json(run_path / "messages.json", self._messages_payload(run.messages))
+        if run.execution_plan is not None:
+            self._write_json(
+                run_path / "execution_plan.json",
+                execution_plan_payload(run.execution_plan),
+            )
         self._write_json(
             run_path / "team_chat.json",
             dialogue_transcript_payload(run.dialogue_turns, run_id=run.id),
@@ -57,6 +68,10 @@ class TeamRunWorkspace:
         )
         (run_path / "team_chat.md").write_text(
             dialogue_markdown(run.dialogue_turns),
+            encoding="utf-8",
+        )
+        (run_path / "execution_timeline.md").write_text(
+            execution_timeline_markdown(run),
             encoding="utf-8",
         )
         (run_path / "final.md").write_text(run.final_text or "", encoding="utf-8")
@@ -98,6 +113,11 @@ class TeamRunWorkspace:
             if (run_path / "team_chat.json").exists()
             else {"turns": []}
         )
+        execution_plan_payload_data = (
+            self._read_json(run_path / "execution_plan.json")
+            if (run_path / "execution_plan.json").exists()
+            else None
+        )
         profiles = default_profiles_by_role()
 
         run = TeamRun(
@@ -110,6 +130,9 @@ class TeamRunWorkspace:
             started_at=self._parse_optional_datetime(run_payload.get("started_at")),
             completed_at=self._parse_optional_datetime(run_payload.get("finished_at")),
         )
+        run.execution_mode = TeamExecutionMode(run_payload.get("execution_mode", "sequential"))
+        if execution_plan_payload_data is not None:
+            run.execution_plan = execution_plan_from_payload(execution_plan_payload_data)
         run.attachments = [
             attachment_from_payload(attachment)
             for attachment in attachments_payload.get("attachments", [])
@@ -125,6 +148,9 @@ class TeamRunWorkspace:
                 started_at=self._parse_optional_datetime(task.get("started_at")),
                 completed_at=self._parse_optional_datetime(task.get("finished_at")),
                 error_message=task.get("error_message"),
+                dependencies=tuple(AgentRole(role) for role in task.get("dependencies", [])),
+                execution_step_id=task.get("execution_step_id"),
+                execution_mode=task.get("execution_mode"),
             )
             for task in tasks_payload
         ]
@@ -188,6 +214,7 @@ class TeamRunWorkspace:
             "error_message": run.error_message,
             "attachments_count": len(run.attachments),
             "dialogue_turns_count": len(run.dialogue_turns),
+            "execution_mode": TeamExecutionMode(run.execution_mode).value,
             "agents": self._agent_summaries(run),
         }
 
@@ -214,6 +241,9 @@ class TeamRunWorkspace:
                     "started_at": self._serialize_datetime(task.started_at),
                     "finished_at": self._serialize_datetime(task.completed_at),
                     "error_message": task.error_message,
+                    "dependencies": [role.value for role in task.dependencies],
+                    "execution_step_id": task.execution_step_id,
+                    "execution_mode": task.execution_mode,
                 }
             )
         return summaries
@@ -230,6 +260,9 @@ class TeamRunWorkspace:
                 "started_at": self._serialize_datetime(task.started_at),
                 "finished_at": self._serialize_datetime(task.completed_at),
                 "error_message": task.error_message,
+                "dependencies": [role.value for role in task.dependencies],
+                "execution_step_id": task.execution_step_id,
+                "execution_mode": task.execution_mode,
             }
             for task in tasks
         ]
@@ -244,6 +277,9 @@ class TeamRunWorkspace:
                 "display_name": result.profile.display_name,
                 "content": result.content,
                 "created_at": self._serialize_datetime(result.created_at),
+                "dependencies": result.metadata.get("dependencies", []),
+                "execution_step_id": result.metadata.get("execution_step_id"),
+                "execution_mode": result.metadata.get("execution_mode"),
                 "metadata": result.metadata,
             }
             for result in results

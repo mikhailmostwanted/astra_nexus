@@ -188,6 +188,80 @@ astra-nexus-team-dialogue-preview "проверь идею AI-команды"
 astra-nexus-team-dialogue-preview --file docs/AI_TEAM.md "проверь файл"
 ```
 
+## Parallel Agents Foundation v1
+
+`astra_nexus.team.execution_plan` добавляет план выполнения команды. Это foundation для
+будущих параллельных агентов, но не запуск нескольких NoDriver browser/profile и не
+отдельные ChatGPT-чаты.
+
+Основные сущности:
+
+- `TeamExecutionMode` - `sequential` или `parallel`.
+- `TeamExecutionDependency` - явная зависимость роли от результата другой роли.
+- `TeamExecutionStep` - один шаг плана: одна роль или группа ролей.
+- `TeamExecutionPlan` - список шагов, лимит parallel agents и timeout agent-step.
+
+Default sequential остаётся режимом по умолчанию. Parallel mode включается явно через
+constructor/CLI/settings и сейчас безопасно работает на `FakeTeamProvider`:
+
+```text
+coordinator
+analyst + critic
+editor
+qa_controller
+final_composer
+```
+
+Зависимости v1:
+
+- `coordinator` выполняется первым;
+- `analyst` зависит от `coordinator`;
+- `critic` в parallel plan работает как preliminary risk-checker после `coordinator`, а
+  не ждёт `analyst`;
+- `editor` зависит от `coordinator`, `analyst`, `critic`;
+- `qa_controller` зависит от `editor`;
+- `final_composer` зависит от `qa_controller`.
+
+Provider contract получил capability flag `supports_parallel`. Если requested mode
+`parallel`, но provider не поддерживает parallel execution, orchestrator автоматически
+использует effective `sequential` plan. Для `NoDriverTeamProvider` явно выставлено
+`supports_parallel = false`, поэтому реальный ChatGPT Web transport остаётся безопасно
+последовательным. Для `FakeTeamProvider` выставлено `supports_parallel = true`, и unit-тесты
+проверяют реальный `asyncio` parallel step.
+
+Настройки:
+
+- `TEAM_EXECUTION_MODE` / `ASTRA_TEAM_EXECUTION_MODE` - `sequential` или `parallel`.
+- `TEAM_MAX_PARALLEL_AGENTS` / `ASTRA_TEAM_MAX_PARALLEL_AGENTS` - default `2`.
+- `TEAM_PARALLEL_AGENT_TIMEOUT_SECONDS` / `ASTRA_TEAM_PARALLEL_AGENT_TIMEOUT_SECONDS` -
+  default `240`.
+
+Workspace дополнен файлами:
+
+- `execution_plan.json` - structured execution plan.
+- `execution_timeline.md` - readable order of steps, tasks, dependencies and timestamps.
+- `run.json` содержит effective `execution_mode`.
+- `tasks.json` и `results.json` содержат `dependencies`, `execution_step_id`,
+  `execution_mode`.
+
+Dialogue transcript сохраняется как раньше. В parallel mode видно, что `analyst` и
+`critic` стартуют в одном parallel step; живые реплики идут в `main_chat`, технические
+`agent_started/agent_finished` остаются в `log_chat`.
+
+Preview без NoDriver:
+
+```bash
+astra-nexus-team-parallel-preview "проверь идею AI-команды"
+```
+
+Ограничения v1:
+
+- NoDriver provider остаётся sequential;
+- нет отдельных ChatGPT-чатов и browser profiles для агентов;
+- parallel работает как архитектурный/test слой поверх provider capability;
+- следующий шаг к настоящей параллельности - несколько безопасно управляемых agent sessions
+  и явный scheduler для реальных provider transports.
+
 ## Team Intake / Intent Router
 
 Перед `AsyncTeamOrchestrator` добавлен слой `astra_nexus.team.intake`. Он принимает

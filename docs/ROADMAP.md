@@ -108,6 +108,7 @@
 - Добавлен Telegram Team Jobs v1: background jobs, `/status`, `/stopall` и защита от дублей в одном чате.
 - Добавлен Files for Team Tasks v1: attachments manifest, `input_files/`, txt/md extraction и file context в prompts.
 - Добавлен Team Dialogue v1: живой transcript агентов, `team_chat.json`/`team_chat.md` и разделение main-chat/log-chat.
+- Добавлен Parallel Agents Foundation v1: execution plan, parallel fake-provider режим, fallback на sequential для NoDriver.
 
 ---
 
@@ -214,6 +215,7 @@
 ### Нужно сделать
 
 - Добавить поддержку нескольких agent sessions.
+- Добавить foundation execution plan для будущей параллельности. (v1 добавлен: fake-provider parallel, NoDriver sequential fallback.)
 - Продумать, когда агент работает:
   - через общий provider;
   - через отдельный ChatGPT-чат;

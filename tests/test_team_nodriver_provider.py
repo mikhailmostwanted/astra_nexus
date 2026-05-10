@@ -102,3 +102,9 @@ def test_nodriver_team_provider_passes_expected_context_to_brain_provider(tmp_pa
     assert context["agent_name"] == "Саша / Финальный сборщик"
     assert context["previous_results_count"] == 5
     assert context["workspace_path"] == str(tmp_path / "team_run_999")
+
+
+def test_nodriver_team_provider_reports_no_parallel_support() -> None:
+    provider = NoDriverTeamProvider(brain_provider=RecordingBrainProvider())
+
+    assert provider.supports_parallel is False

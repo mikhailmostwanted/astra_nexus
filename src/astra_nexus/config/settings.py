@@ -69,6 +69,30 @@ class Settings(BaseSettings):
             "ASTRA_TEAM_PREVIOUS_RESULTS_MAX_CHARS",
         ),
     )
+    team_execution_mode: str = Field(
+        default="sequential",
+        validation_alias=AliasChoices(
+            "team_execution_mode",
+            "TEAM_EXECUTION_MODE",
+            "ASTRA_TEAM_EXECUTION_MODE",
+        ),
+    )
+    team_max_parallel_agents: int = Field(
+        default=2,
+        validation_alias=AliasChoices(
+            "team_max_parallel_agents",
+            "TEAM_MAX_PARALLEL_AGENTS",
+            "ASTRA_TEAM_MAX_PARALLEL_AGENTS",
+        ),
+    )
+    team_parallel_agent_timeout_seconds: float = Field(
+        default=240.0,
+        validation_alias=AliasChoices(
+            "team_parallel_agent_timeout_seconds",
+            "TEAM_PARALLEL_AGENT_TIMEOUT_SECONDS",
+            "ASTRA_TEAM_PARALLEL_AGENT_TIMEOUT_SECONDS",
+        ),
+    )
     team_attachments_max_files: int = Field(
         default=5,
         validation_alias=AliasChoices(

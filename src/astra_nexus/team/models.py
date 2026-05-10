@@ -10,6 +10,7 @@ from astra_nexus.utils.ids import new_id
 if TYPE_CHECKING:
     from astra_nexus.team.attachments import TeamInputAttachment
     from astra_nexus.team.dialogue import TeamDialogueTurn
+    from astra_nexus.team.execution_plan import TeamExecutionPlan
     from astra_nexus.team.messages import TeamMessage
 
 
@@ -85,6 +86,9 @@ class AgentTask:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error_message: str | None = None
+    dependencies: tuple[AgentRole, ...] = ()
+    execution_step_id: str | None = None
+    execution_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +125,8 @@ class TeamRun:
     messages: list[TeamMessage] = field(default_factory=list)
     dialogue_turns: list[TeamDialogueTurn] = field(default_factory=list)
     attachments: list[TeamInputAttachment] = field(default_factory=list)
+    execution_mode: Any = "sequential"
+    execution_plan: TeamExecutionPlan | None = None
     final_text: str | None = None
     error_message: str | None = None
     created_at: datetime = field(default_factory=utc_now)

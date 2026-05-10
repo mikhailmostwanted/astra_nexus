@@ -18,6 +18,7 @@ class FakeProviderCall:
 
 class FakeTeamProvider(TeamProvider):
     name = "fake"
+    supports_parallel = True
 
     def __init__(
         self,

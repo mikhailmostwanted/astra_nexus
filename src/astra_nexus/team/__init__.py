@@ -12,6 +12,14 @@ from astra_nexus.team.dialogue import (
     TeamDialogueTranscript,
     TeamDialogueTurn,
 )
+from astra_nexus.team.execution_plan import (
+    TeamExecutionDependency,
+    TeamExecutionMode,
+    TeamExecutionPlan,
+    TeamExecutionStep,
+    default_parallel_execution_plan,
+    default_sequential_execution_plan,
+)
 from astra_nexus.team.fake_provider import FakeProviderCall, FakeTeamProvider
 from astra_nexus.team.intake import (
     TeamInput,
@@ -111,6 +119,10 @@ __all__ = [
     "TeamDialogueStyle",
     "TeamDialogueTranscript",
     "TeamDialogueTurn",
+    "TeamExecutionDependency",
+    "TeamExecutionMode",
+    "TeamExecutionPlan",
+    "TeamExecutionStep",
     "TeamInputAttachment",
     "TeamInput",
     "TeamInputIntent",
@@ -140,5 +152,7 @@ __all__ = [
     "TelegramTeamMessageSink",
     "TelegramTeamSession",
     "TelegramTeamSessionRegistry",
+    "default_parallel_execution_plan",
     "default_profiles_by_role",
+    "default_sequential_execution_plan",
 ]

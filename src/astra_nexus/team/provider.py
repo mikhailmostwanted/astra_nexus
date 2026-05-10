@@ -37,6 +37,7 @@ class TeamProviderError(RuntimeError):
 
 class TeamProvider(ABC):
     name: str
+    supports_parallel: bool = False
 
     @abstractmethod
     async def generate(

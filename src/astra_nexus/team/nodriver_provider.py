@@ -30,6 +30,7 @@ PERMANENT_NODRIVER_ERROR_CODES = {
 
 class NoDriverTeamProvider(TeamProvider):
     name = "nodriver_team"
+    supports_parallel = False
 
     def __init__(
         self,
