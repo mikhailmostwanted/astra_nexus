@@ -102,6 +102,7 @@
 - Добавлен `TeamProvider` contract и `FakeTeamProvider` для unit-тестов.
 - Добавлены события `run_started`, `run_finished`, `run_failed`, `agent_started`, `agent_finished`, `agent_failed`.
 - Добавлен внутренний event stream и human-readable сообщения агентов для будущего Telegram/UI bridge.
+- Добавлен Team Intake / Intent Router, чтобы обычный диалог не запускал AI-команду автоматически.
 
 ---
 

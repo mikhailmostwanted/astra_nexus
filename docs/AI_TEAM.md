@@ -145,6 +145,44 @@ Prompt Engine находится в `astra_nexus.team.prompting`.
 Чтобы обычная болтовня в Telegram не считалась задачей, позже нужен отдельный
 intent/router layer.
 
+## Team Intake / Intent Router
+
+Перед `AsyncTeamOrchestrator` добавлен слой `astra_nexus.team.intake`. Он принимает
+входящее сообщение пользователя и решает, нужно ли запускать команду, продолжать run или
+просто ответить без orchestration.
+
+Основные сущности:
+
+- `TeamInput` - текст, количество вложений и контекст run: `active_run_id`,
+  `last_run_id`, `failed_run_id`, `has_active_run`.
+- `TeamInputIntent` - классификация входа.
+- `TeamIntakeDecision` - intent, confidence, reason, флаги действия и
+  `user_visible_reply`.
+- `TeamIntakeRouter` - rule-based router без NoDriver, Telegram и LLM.
+- `TeamConversationController` - минимальный controller, который вызывает router и
+  запускает orchestrator только когда decision разрешает старт/resume run.
+
+Текущие intents:
+
+- `casual_chat` - обычная короткая реплика, команду не запускаем.
+- `new_task` - новая текстовая задача для AI-команды.
+- `task_followup` - уточнение к активному run.
+- `revise_previous_result` - правка предыдущего результата.
+- `file_task` - вход с вложениями.
+- `status_request` - запрос статуса.
+- `resume_run` - продолжение failed run.
+- `stop_all` - команда остановки активных runs.
+- `empty_input` - пустой ввод без файлов.
+- `unknown` - ввод не совпал с текущими правилами.
+
+Сейчас router намеренно rule-based. Он смотрит на короткие команды, явные глаголы задачи
+(`сделай`, `проверь`, `напиши`, `составь`, `проанализируй`, `улучши`, `перепиши`,
+`подготовь`, `разбери`), наличие файлов и run-контекст. Это защищает систему от ошибки,
+когда обычная болтовня автоматически воспринимается как новая сложная задача.
+
+Позже можно добавить LLM-router, но только поверх стабильной rule-based базы, чтобы
+Telegram-диалог оставался предсказуемым.
+
 ## Retry policy
 
 AI Team pipeline выполняет агентов последовательно, но каждый агентский шаг может быть
@@ -267,6 +305,19 @@ astra-nexus-team-chat-preview "Проверь идею AI-команды для 
 ```bash
 astra-nexus-team-chat-preview --main-only "Проверь идею AI-команды для Astra Nexus."
 ```
+
+## CLI intake preview
+
+Посмотреть routing decision без запуска команды можно так:
+
+```bash
+astra-nexus-team-intake-preview "брат че думаешь"
+astra-nexus-team-intake-preview "сделай подробный план AI-команды"
+astra-nexus-team-intake-preview "стоп все"
+```
+
+Команда печатает `intent`, `confidence`, `reason`, action-флаги и
+`user_visible_reply`. Она не импортирует NoDriver и не запускает browser.
 
 ## CLI real team ask
 

@@ -1,4 +1,12 @@
 from astra_nexus.team.fake_provider import FakeProviderCall, FakeTeamProvider
+from astra_nexus.team.intake import (
+    TeamConversationController,
+    TeamConversationResult,
+    TeamInput,
+    TeamInputIntent,
+    TeamIntakeDecision,
+    TeamIntakeRouter,
+)
 from astra_nexus.team.messages import (
     CompositeTeamMessageSink,
     InMemoryTeamMessageSink,
@@ -55,6 +63,12 @@ __all__ = [
     "TeamMessageRenderer",
     "TeamMessageSink",
     "TeamMessageType",
+    "TeamConversationController",
+    "TeamConversationResult",
+    "TeamInput",
+    "TeamInputIntent",
+    "TeamIntakeDecision",
+    "TeamIntakeRouter",
     "TeamProvider",
     "TeamProviderError",
     "TeamPromptBuilder",
