@@ -75,6 +75,23 @@ class FailingTeamProvider(TeamProvider):
         raise TeamProviderError("controlled failure", agent_id=profile.profile_id)
 
 
+class TracebackLikeFailingProvider(TeamProvider):
+    name = "traceback_like_failing_test"
+
+    async def generate(
+        self,
+        *,
+        profile: AgentProfile,
+        user_task: str,
+        previous_results: Sequence[AgentResult],
+        prompt: AgentPrompt | None = None,
+    ) -> str:
+        raise TeamProviderError(
+            "Traceback (most recent call last):\nFile secret.py\ncontrolled low-level failure",
+            agent_id=profile.profile_id,
+        )
+
+
 def test_telegram_preview_casual_does_not_create_run() -> None:
     bot = RecordingTelegramBot()
     bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
@@ -87,6 +104,57 @@ def test_telegram_preview_casual_does_not_create_run() -> None:
     assert bot.messages[-1].text == (
         "Босс, я на связи. Можем спокойно обсудить или сразу превратить мысль в задачу."
     )
+
+
+def test_telegram_help_does_not_create_run() -> None:
+    async def scenario() -> None:
+        provider = FakeTeamProvider()
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake"),
+            provider_factory=lambda: provider,
+        )
+
+        response = await bridge.handle_text(chat_id=100, text="/help")
+
+        assert response.decision.intent.value == "help_request"
+        assert response.status == TeamRuntimeStatus.IDLE
+        assert provider.calls == []
+        assert bridge.jobs.snapshot("100") is None
+        assert "/status" in bot.messages[-1].text
+        assert "/health" in bot.messages[-1].text
+
+    asyncio.run(scenario())
+
+
+def test_telegram_health_does_not_create_run(tmp_path) -> None:
+    async def scenario() -> None:
+        provider = FakeTeamProvider()
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="fake",
+                workspace_root=tmp_path / "team_runs",
+                log_chat_id=200,
+            ),
+            provider_factory=lambda: provider,
+        )
+
+        response = await bridge.handle_text(chat_id=100, text="/health")
+
+        assert response.decision.intent.value == "health_request"
+        assert response.status == TeamRuntimeStatus.IDLE
+        assert provider.calls == []
+        assert bridge.jobs.snapshot("100") is None
+        text = bot.messages[-1].text
+        assert "provider: fake" in text
+        assert "active_job: no" in text
+        assert "log_chat: yes" in text
+        assert str(tmp_path / "team_runs") in text
+
+    asyncio.run(scenario())
 
 
 def test_telegram_preview_task_starts_background_job() -> None:
@@ -162,6 +230,8 @@ def test_telegram_status_sees_active_job() -> None:
 
         assert response.status == TeamRuntimeStatus.RUNNING
         assert "Активная задача" in bot.messages[-1].text
+        assert "provider: fake" in bot.messages[-1].text
+        assert "started_at:" in bot.messages[-1].text
 
         provider.release.set()
         await bridge.jobs.wait("100")
@@ -245,6 +315,45 @@ def test_telegram_failed_background_job_is_saved_as_last_failed() -> None:
         assert failed.status == TeamJobStatus.FAILED
         assert bridge.jobs.last_failed("100").job_id == failed.job_id
         assert any("Можно продолжить" in message.text for message in bot.messages)
+
+    asyncio.run(scenario())
+
+
+def test_telegram_error_message_hides_traceback_from_main_and_logs_details(tmp_path) -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="fake",
+                workspace_root=tmp_path / "team_runs",
+                log_chat_id=200,
+            ),
+            provider_factory=TracebackLikeFailingProvider,
+        )
+
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        failed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        main_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.MAIN_CHAT
+        ]
+        log_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.LOG_CHAT
+        ]
+        assert failed.status == TeamJobStatus.FAILED
+        assert all("Traceback" not in text for text in main_texts)
+        assert all("secret.py" not in text for text in main_texts)
+        assert any("Команда завершилась с ошибкой" in text for text in main_texts)
+        assert any("run_id:" in text for text in main_texts)
+        assert any("workspace:" in text for text in main_texts)
+        assert any("run_failed" in text for text in log_texts)
+        assert any("controlled low-level failure" in text for text in log_texts)
 
     asyncio.run(scenario())
 

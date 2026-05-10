@@ -177,7 +177,30 @@ def test_runs_handles_legacy_run_json_without_artifact_fields(tmp_path) -> None:
         assert response.decision.intent.value == "runs_request"
         assert response.status == TeamRuntimeStatus.IDLE
         assert "team_run_legacy" in bot.messages[-1].text
-        assert "artifacts:" not in bot.messages[-1].text
+        assert "artifacts: 0" in bot.messages[-1].text
+
+    asyncio.run(scenario())
+
+
+def test_runs_ignores_corrupted_run_json_without_crashing(tmp_path) -> None:
+    async def scenario() -> None:
+        root = tmp_path / "team_runs"
+        _write_run(root, "team_run_ok", session_id="100")
+        bad_dir = root / "team_run_bad"
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "run.json").write_text("{broken", encoding="utf-8")
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake", workspace_root=root),
+        )
+
+        response = await bridge.handle_text(chat_id=100, text="/runs")
+
+        assert response.decision.intent.value == "runs_request"
+        assert response.status == TeamRuntimeStatus.IDLE
+        assert "team_run_ok" in bot.messages[-1].text
+        assert "team_run_bad" not in bot.messages[-1].text
 
     asyncio.run(scenario())
 

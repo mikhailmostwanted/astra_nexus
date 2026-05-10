@@ -22,6 +22,8 @@ class TeamInputIntent(StrEnum):
     FILE_TASK = "file_task"
     STATUS_REQUEST = "status_request"
     RUNS_REQUEST = "runs_request"
+    HEALTH_REQUEST = "health_request"
+    HELP_REQUEST = "help_request"
     RESUME_RUN = "resume_run"
     STOP_ALL = "stop_all"
     EMPTY_INPUT = "empty_input"
@@ -71,6 +73,8 @@ class TeamConversationResult:
 class TeamIntakeRouter:
     stop_phrases = ("/stopall", "стоп все", "стоп всё", "останови всё", "остановить всех")
     runs_phrases = ("/runs",)
+    health_phrases = ("/health",)
+    help_phrases = ("/help", "help")
     status_phrases = (
         "/status",
         "статус",
@@ -134,6 +138,20 @@ class TeamIntakeRouter:
                 0.98,
                 "runs command detected",
                 "Сейчас покажу последние запуски команды.",
+            )
+        if self._contains_any(text, self.health_phrases):
+            return self._decision(
+                TeamInputIntent.HEALTH_REQUEST,
+                0.98,
+                "health command detected",
+                "Сейчас проверю состояние Telegram runtime.",
+            )
+        if self._contains_any(text, self.help_phrases):
+            return self._decision(
+                TeamInputIntent.HELP_REQUEST,
+                0.98,
+                "help command detected",
+                "Показываю доступные команды AI-команды.",
             )
         if self._contains_any(text, self.status_phrases):
             return self._decision(

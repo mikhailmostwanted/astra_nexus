@@ -362,6 +362,24 @@ class TelegramTeamBridge:
         decision = controller.router.route(team_input)
         session_id = self._session_id(chat_id)
 
+        if decision.intent == TeamInputIntent.HELP_REQUEST:
+            response = self._handle_help(decision=decision, state=controller.state)
+            await self._send(
+                TelegramOutgoingMessage(chat_id=chat_id, text=response.user_visible_reply)
+            )
+            return response
+
+        if decision.intent == TeamInputIntent.HEALTH_REQUEST:
+            response = self._handle_health(
+                session_id=session_id,
+                decision=decision,
+                state=controller.state,
+            )
+            await self._send(
+                TelegramOutgoingMessage(chat_id=chat_id, text=response.user_visible_reply)
+            )
+            return response
+
         if decision.intent == TeamInputIntent.STATUS_REQUEST:
             response = await self._handle_status(
                 session_id=session_id,
@@ -520,6 +538,7 @@ class TelegramTeamBridge:
         session_id: str | None = None,
         provider: str | None = None,
         execution_mode: str | None = None,
+        error_message: str | None = None,
     ) -> None:
         if self.config.log_chat_id is None:
             return
@@ -534,6 +553,7 @@ class TelegramTeamBridge:
                 session_id=session_id,
                 provider=provider,
                 execution_mode=execution_mode,
+                error_message=error_message,
             )
         )
         self._send_tasks.add(task)
@@ -551,6 +571,7 @@ class TelegramTeamBridge:
         session_id: str | None = None,
         provider: str | None = None,
         execution_mode: str | None = None,
+        error_message: str | None = None,
     ) -> None:
         if self.config.log_chat_id is None:
             return
@@ -567,6 +588,8 @@ class TelegramTeamBridge:
             details.append(f"execution_mode={execution_mode}")
         if status:
             details.append(f"status={status}")
+        if error_message:
+            details.append(f"error={error_message}")
         details.append(f"workspace={workspace or 'pending'}")
         await self._send(
             TelegramOutgoingMessage(
@@ -670,6 +693,28 @@ class TelegramTeamBridge:
             status=TeamRuntimeStatus.RUNNING,
             run_id=handle.job.id,
             state=session.controller.state,
+        )
+
+    def _handle_help(self, *, decision: TeamIntakeDecision, state: Any) -> TeamRuntimeResponse:
+        return TeamRuntimeResponse(
+            user_visible_reply=self._help_text(),
+            decision=decision,
+            status=TeamRuntimeStatus.IDLE,
+            state=state,
+        )
+
+    def _handle_health(
+        self,
+        *,
+        session_id: str,
+        decision: TeamIntakeDecision,
+        state: Any,
+    ) -> TeamRuntimeResponse:
+        return TeamRuntimeResponse(
+            user_visible_reply=self._health_text(session_id=session_id),
+            decision=decision,
+            status=TeamRuntimeStatus.IDLE,
+            state=state,
         )
 
     async def _handle_status(
@@ -780,6 +825,7 @@ class TelegramTeamBridge:
             )
             await self._send_completed_artifacts(chat_id=chat_id, snapshot=snapshot)
         elif snapshot.status == TeamJobStatus.FAILED:
+            technical_error = self._technical_error_text(snapshot)
             await self._send_log(
                 text="run_failed",
                 job_id=snapshot.job_id,
@@ -790,6 +836,7 @@ class TelegramTeamBridge:
                 session_id=snapshot.session_id,
                 provider=self.config.provider,
                 execution_mode="sequential",
+                error_message=technical_error or snapshot.error_message,
             )
             await self._send(
                 TelegramOutgoingMessage(
@@ -846,8 +893,10 @@ class TelegramTeamBridge:
                     "Активная задача: есть.",
                     "Кто работает: команда.",
                     f"job_id: {snapshot.job_id}",
-                    f"status: {snapshot.status.value}",
                     f"run_id: {run}",
+                    f"provider: {self.config.provider}",
+                    f"started_at: {_datetime_text(snapshot.started_at)}",
+                    f"status: {snapshot.status.value}",
                     f"workspace: {workspace}",
                     "Последний результат: пока нет.",
                 ]
@@ -893,8 +942,15 @@ class TelegramTeamBridge:
             lines.append(f"run_id: {snapshot.run_id}")
         if snapshot.workspace_path:
             lines.append(f"workspace: {snapshot.workspace_path}")
+        payload = self._workspace_run_payload(snapshot.workspace_path)
+        artifacts_count = _int_or_zero(payload.get("artifacts_count")) if payload else 0
+        primary_artifact = _path_or_none(payload.get("primary_artifact_path")) if payload else None
+        if artifacts_count:
+            lines.append(f"artifacts: {artifacts_count}")
+            if primary_artifact is not None:
+                lines.append(f"primary_artifact: {primary_artifact}")
         if snapshot.error_message:
-            lines.append(f"message: {snapshot.error_message}")
+            lines.append("message: детали ошибки отправлены в log chat.")
         if snapshot.run_id:
             lines.append(f"Можно продолжить: astra-nexus-team-resume {snapshot.run_id}")
         return "\n".join(lines)
@@ -907,6 +963,8 @@ class TelegramTeamBridge:
             f"run_id: {entry.run_id}",
             f"workspace: {entry.workspace_path}",
         ]
+        if entry.provider:
+            lines.append(f"provider: {entry.provider}")
         if entry.finished_at is not None:
             lines.append(f"finished: {entry.finished_at.isoformat()}")
         if entry.status == "completed":
@@ -934,13 +992,65 @@ class TelegramTeamBridge:
                     f"  created: {_datetime_text(entry.created_at)}",
                     f"  finished: {_datetime_text(entry.finished_at)}",
                     f"  workspace: {entry.workspace_path}",
+                    f"  artifacts: {entry.artifacts_count}",
                 ]
             )
-            if entry.artifacts_count:
-                lines.append(f"  artifacts: {entry.artifacts_count}")
-                if entry.primary_artifact_path is not None:
-                    lines.append(f"  primary_artifact: {entry.primary_artifact_path}")
+            if entry.primary_artifact_path is not None:
+                lines.append(f"  primary_artifact: {entry.primary_artifact_path}")
         return "\n".join(lines)
+
+    def _help_text(self) -> str:
+        return "\n".join(
+            [
+                "Команды AI-команды:",
+                "/status — активная задача или последний run.",
+                "/runs — последние 5 запусков.",
+                "/health — состояние Telegram runtime.",
+                "/stopall — остановить активную задачу.",
+                "",
+                "Обычный текст может быть коротким сообщением или задачей. "
+                "Если хочешь запустить команду, формулируй действие явно: сделай, проверь, "
+                "составь, проанализируй.",
+            ]
+        )
+
+    def _health_text(self, *, session_id: str) -> str:
+        active = self.jobs.active(session_id)
+        last_completed = self._last_job_or_registry_run_id(
+            self.jobs.last_completed(session_id),
+            self.run_registry.last_completed(session_id=session_id),
+        )
+        last_failed = self._last_job_or_registry_run_id(
+            self.jobs.last_failed(session_id),
+            self.run_registry.last_failed(session_id=session_id),
+        )
+        last_cancelled = self._last_job_or_registry_run_id(
+            self.jobs.last_cancelled(session_id),
+            self.run_registry.last_cancelled(session_id=session_id),
+        )
+        return "\n".join(
+            [
+                "AI Team health:",
+                f"provider: {self.config.provider}",
+                f"active_job: {'yes' if active is not None else 'no'}",
+                f"last_completed: {last_completed or 'нет'}",
+                f"last_failed: {last_failed or 'нет'}",
+                f"last_cancelled: {last_cancelled or 'нет'}",
+                f"runs_dir: {self.config.workspace_root}",
+                f"log_chat: {'yes' if self.config.log_chat_id is not None else 'no'}",
+            ]
+        )
+
+    def _last_job_or_registry_run_id(
+        self,
+        job: TeamJobSnapshot | None,
+        entry: TeamRunRegistryEntry | None,
+    ) -> str | None:
+        if job is not None:
+            return job.run_id or job.job_id
+        if entry is not None:
+            return entry.run_id
+        return None
 
     async def _send_completed_artifacts(
         self,
@@ -986,6 +1096,13 @@ class TelegramTeamBridge:
         except Exception:
             return {}
         return payload if isinstance(payload, dict) else {}
+
+    def _technical_error_text(self, snapshot: TeamJobSnapshot) -> str | None:
+        payload = self._workspace_run_payload(snapshot.workspace_path)
+        error = payload.get("error_message") if payload else None
+        if error:
+            return str(error)
+        return snapshot.error_message
 
     def _session_id(self, chat_id: int) -> str:
         return str(chat_id)
@@ -1142,6 +1259,8 @@ async def run_live_preview(argv: list[str] | None = None) -> int:
 
         scenarios: tuple[tuple[str, str, tuple[TeamInputAttachment, ...]], ...] = (
             ("брат че думаешь", "брат че думаешь", ()),
+            ("/help", "/help", ()),
+            ("/health", "/health", ()),
             ("сделай краткий план AI-команды", "сделай краткий план AI-команды", ()),
             ("/status", "/status", ()),
             ("/runs", "/runs", ()),

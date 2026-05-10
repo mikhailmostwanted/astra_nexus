@@ -126,6 +126,18 @@ class TeamConversationController:
                 ),
             )
 
+        if decision.intent == TeamInputIntent.HEALTH_REQUEST:
+            return self._response(
+                decision=decision,
+                user_visible_reply="Health доступен через Telegram bridge.",
+            )
+
+        if decision.intent == TeamInputIntent.HELP_REQUEST:
+            return self._response(
+                decision=decision,
+                user_visible_reply="Команды: /status, /runs, /health, /stopall.",
+            )
+
         if decision.intent == TeamInputIntent.STOP_ALL:
             return self._stop_all(decision)
 

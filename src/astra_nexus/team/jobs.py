@@ -141,6 +141,10 @@ class TeamJobManager:
         job = self.last_failed_jobs.get(session_id)
         return job.snapshot() if job is not None else None
 
+    def last_cancelled(self, session_id: str) -> TeamJobSnapshot | None:
+        job = self.last_cancelled_jobs.get(session_id)
+        return job.snapshot() if job is not None else None
+
     async def wait(self, session_id: str) -> TeamJobSnapshot:
         job = self.active_jobs.get(session_id) or self.last_jobs.get(session_id)
         if job is None:

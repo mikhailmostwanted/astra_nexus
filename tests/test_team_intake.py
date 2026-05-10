@@ -101,6 +101,20 @@ def test_runs_command_is_runs_request() -> None:
     assert decision.user_visible_reply == "Сейчас покажу последние запуски команды."
 
 
+def test_help_command_is_help_request() -> None:
+    decision = TeamIntakeRouter().route(TeamInput(text="/help"))
+
+    assert decision.intent == TeamInputIntent.HELP_REQUEST
+    assert decision.should_start_run is False
+
+
+def test_health_command_is_health_request() -> None:
+    decision = TeamIntakeRouter().route(TeamInput(text="/health"))
+
+    assert decision.intent == TeamInputIntent.HEALTH_REQUEST
+    assert decision.should_start_run is False
+
+
 def test_resume_text_with_failed_run_id_is_resume_run() -> None:
     decision = TeamIntakeRouter().route(
         TeamInput(text="продолжи прошлое", failed_run_id="team_run_failed")

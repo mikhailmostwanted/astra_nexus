@@ -119,6 +119,8 @@
   prompt truncation, расширенная metadata attachments и безопасные ошибки extraction.
 - Добавлен Output Artifacts v1: итоговые markdown/json артефакты run, индекс
   `artifacts/index.md`, manifest, Telegram notice и отправка `final_answer.md`/`index.md`.
+- Добавлен MVP Stabilization / Live Telegram Test v1: `astra-nexus-team-mvp-check`,
+  Telegram `/help` и `/health`, безопасные ошибки main chat и live checklist.
 
 ---
 

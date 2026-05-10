@@ -200,6 +200,7 @@ astra-nexus-team-telegram-bot
 
 ```bash
 astra-nexus-team-telegram-bot --dry-run
+astra-nexus-team-mvp-check
 astra-nexus-team-telegram-live-preview
 ```
 
@@ -311,6 +312,62 @@ astra-nexus-team-atmosphere-preview
 
 Он показывает сценарии `casual text`, `new task`, `file without caption`, `file with
 caption`, `/status`, `/stopall` и явно разделяет `MAIN CHAT` / `LOG CHAT`.
+
+## MVP Stabilization / Live Telegram Test v1
+
+`astra_nexus.team.diagnostics` добавляет лёгкую локальную диагностику перед реальным
+Telegram запуском. Она не вызывает Telegram API, не стартует NoDriver и не меняет
+browser lifecycle.
+
+Команда:
+
+```bash
+astra-nexus-team-mvp-check
+```
+
+Проверяет:
+
+- Python/app import;
+- загрузку settings;
+- `TEAM_TELEGRAM_PROVIDER`;
+- задан ли `TELEGRAM_BOT_TOKEN`;
+- задан ли `TEAM_TELEGRAM_ALLOWED_CHAT_IDS`;
+- задан ли `TEAM_TELEGRAM_LOG_CHAT_ID`;
+- существует ли `TEAM_RUNS_DIR` или можно ли его создать;
+- работает ли короткий fake-provider run;
+- создаётся ли `artifacts/` после fake run;
+- читается ли последний run через registry;
+- существует ли `TEAM_TELEGRAM_DOWNLOADS_DIR` или можно ли его создать;
+- для `TEAM_TELEGRAM_PROVIDER=nodriver` показывает warning и next action:
+  сначала отдельно проверить `astra-nexus-nodriver-smoke` и `astra-nexus-nodriver-ask`.
+
+Вывод человекочитаемый: общий `status: ok|warn|error`, список checks и next actions.
+`warn` не считается провалом CLI: например, отсутствие Telegram token нормально для preview,
+но не для live polling.
+
+Telegram команды MVP:
+
+- `/help` - короткий список команд: `/status`, `/runs`, `/health`, `/stopall`, плюс
+  пояснение, что обычный текст может быть сообщением или задачей.
+- `/health` - короткое состояние runtime: provider, active job yes/no,
+  last completed/failed/cancelled, runs dir, log chat configured yes/no.
+- `/status` - если есть active job, показывает `job_id`, `run_id`, `provider`,
+  `started_at`, `status`; если active job нет, показывает последний terminal run из registry.
+- `/runs` - последние 5 runs текущего chat/session с status, timestamps, `run_id`,
+  `artifacts` и primary artifact, если он есть.
+
+Ошибки Telegram:
+
+- main chat получает короткое сообщение без traceback и внутренних stack details;
+- если есть `run_id`, workspace или artifacts, они показываются кратко;
+- для failed run остаётся resume hint `astra-nexus-team-resume <run_id>`;
+- техническая ошибка уходит в log chat, если задан `TEAM_TELEGRAM_LOG_CHAT_ID`.
+
+Live checklist вынесен отдельно:
+
+```bash
+docs/TELEGRAM_LIVE_TEST.md
+```
 
 ## Persistent Team Run Registry v1
 
@@ -608,6 +665,8 @@ runtime, получает `TeamRuntimeResponse`, отправляет `user_visi
   если они есть.
 - `/runs` - показывает последние сохранённые runs текущего chat/session и не запускает
   новую задачу. Для runs с итоговыми файлами добавляет короткую artifact-сводку.
+- `/health` - показывает provider, active job, последние terminal runs, runs dir и log chat.
+- `/help` - показывает доступные команды и объясняет task/casual поведение.
 - `/stopall` - вызывает runtime `stop_all` и помечает активные runs как stopped/cancelled.
 
 Provider mode:
@@ -628,6 +687,8 @@ Preview без реального Telegram и без NoDriver:
 ```bash
 astra-nexus-team-telegram-preview "брат че думаешь"
 astra-nexus-team-telegram-preview "сделай краткий план AI-команды"
+astra-nexus-team-telegram-preview "/help"
+astra-nexus-team-telegram-preview "/health"
 astra-nexus-team-telegram-preview "/status"
 astra-nexus-team-telegram-preview "/runs"
 astra-nexus-team-telegram-preview "/stopall"
@@ -674,6 +735,7 @@ TELEGRAM_BOT_TOKEN=... astra-nexus-team-telegram-bot
 - `/status` без active job показывает последний terminal run из файлового registry;
 - `/runs` показывает последние сохранённые runs текущего chat/session и artifact summary,
   если он есть в `run.json`;
+- `/help` и `/health` не создают background job;
 - `/stopall` отменяет active job и сообщает, что команда остановлена;
 - если job completed, bridge отправляет финальный ответ, короткое сообщение о сохранённых
   файлах результата и пытается отправить `final_answer.md` + `index.md` как документы;
