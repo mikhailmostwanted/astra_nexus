@@ -41,8 +41,9 @@ class NoDriverBrowserConnectError(NoDriverProviderError):
     status = "browser_connect_failed"
     user_message = "не удалось подключиться к Chrome через NoDriver"
     action = (
-        "закрой лишние окна Chrome, выполни astra-nexus-nodriver-clean "
-        "и повтори astra-nexus-nodriver-smoke"
+        "запусти astra-nexus-nodriver-doctor; при занятом profile выполни "
+        "astra-nexus-nodriver-clean; если нужен вход, запусти astra-nexus-nodriver-login; "
+        "проверь Chrome и повтори astra-nexus-nodriver-smoke"
     )
 
 

@@ -58,8 +58,11 @@ headless для автоматических запусков.
 фоновое окно может ломать подключение. Поэтому оба флага по умолчанию `false`; если
 включаешь их вручную, считай это best-effort, а не гарантией.
 `NODRIVER_START_TIMEOUT_SECONDS` передаётся в NoDriver, но сам NoDriver иногда
-возвращает `Failed to connect to browser` раньше этого timeout. Поэтому вокруг старта
-есть внешний retry-цикл: `NODRIVER_START_RETRIES` и
+возвращает `Failed to connect to browser` раньше этого timeout. Поэтому Astra Nexus
+явно выбирает `remote-debugging-port`, проверяет Chrome process, ждёт `/json/version`
+на этом порту до `NODRIVER_START_TIMEOUT_SECONDS` и, если endpoint дозрел, повторно
+подключается к уже поднятому Chrome. Если endpoint так и не открылся, срабатывает
+внешний retry-цикл: `NODRIVER_START_RETRIES` и
 `NODRIVER_START_RETRY_DELAY_SECONDS`. Если failed start успел поднять Chrome, Astra
 Nexus завершает только процесс, появившийся в этой попытке, ждёт
 `NODRIVER_AFTER_TERMINATE_GRACE_SECONDS`, отпускает свой runtime lock и безопасно
@@ -172,6 +175,15 @@ astra-nexus-nodriver-diagnose
 
 Он показывает конфиг, абсолютные пути, lock, PID, наличие профиля и состояние
 `profile_locked`.
+
+`doctor` открывает Chrome без полного ask и проверяет DevTools endpoint:
+
+```bash
+astra-nexus-nodriver-doctor
+```
+
+Он выводит выбранный `remote_debugging_port`, effective window mode, Chrome args,
+появился ли Chrome process, открылся ли endpoint и сколько секунд его ждали.
 
 Лёгкий health тоже не открывает Chrome:
 
