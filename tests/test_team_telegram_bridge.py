@@ -221,7 +221,7 @@ def test_telegram_failed_background_job_is_saved_as_last_failed() -> None:
     asyncio.run(scenario())
 
 
-def test_telegram_bridge_with_attachment_creates_background_file_job(tmp_path) -> None:
+def test_telegram_bridge_with_attachment_without_task_waits_for_instruction(tmp_path) -> None:
     async def scenario() -> None:
         file_path = tmp_path / "task.md"
         file_path.write_text("Контекст из вложения", encoding="utf-8")
@@ -235,17 +235,17 @@ def test_telegram_bridge_with_attachment_creates_background_file_job(tmp_path) -
         )
 
         response = await bridge.handle_text(chat_id=100, text="", attachments=attachments)
-        snapshot = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
 
-        assert response.status == TeamRuntimeStatus.RUNNING
+        assert response.status == TeamRuntimeStatus.IDLE
         assert response.decision.intent.value == "file_task"
-        assert snapshot.status == TeamJobStatus.COMPLETED
-        assert "Контекст из вложения" in provider.calls[0].prompt.user_prompt
+        assert response.decision.should_start_run is False
+        assert provider.calls == []
+        assert any("что именно с ним сделать" in message.text for message in bot.messages)
 
     asyncio.run(scenario())
 
 
-def test_telegram_bridge_accepts_message_attachment_abstraction(tmp_path) -> None:
+def test_telegram_bridge_message_attachment_without_task_waits_for_instruction(tmp_path) -> None:
     async def scenario() -> None:
         class Chat:
             id = 100
@@ -269,11 +269,11 @@ def test_telegram_bridge_accepts_message_attachment_abstraction(tmp_path) -> Non
         )
 
         response = await bridge.handle_message(Message())
-        snapshot = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
 
         assert response.decision.intent.value == "file_task"
-        assert snapshot.status == TeamJobStatus.COMPLETED
-        assert "Telegram file context" in provider.calls[0].prompt.user_prompt
+        assert response.status == TeamRuntimeStatus.IDLE
+        assert provider.calls == []
+        assert any("что именно с ним сделать" in message.text for message in bot.messages)
 
     asyncio.run(scenario())
 
@@ -329,7 +329,7 @@ def test_telegram_bridge_sends_dialogue_to_main_chat_and_events_to_log_chat() ->
             for message in bot.messages
             if message.channel == TeamMessageChannel.LOG_CHAT
         ]
-        assert any("[Артём] Босс, взял задачу" in text for text in main_texts)
+        assert any("[Артём] Понял задачу" in text for text in main_texts)
         assert any("[Саша] Собираю финальную версию." in text for text in main_texts)
         assert any("[Лог] Командный run начат." in text for text in log_texts)
         assert any("[Лог] Финальный сборщик подготовил ответ." in text for text in log_texts)

@@ -93,6 +93,14 @@ class Settings(BaseSettings):
             "ASTRA_TEAM_PARALLEL_AGENT_TIMEOUT_SECONDS",
         ),
     )
+    team_max_revision_loops: int = Field(
+        default=1,
+        validation_alias=AliasChoices(
+            "team_max_revision_loops",
+            "TEAM_MAX_REVISION_LOOPS",
+            "ASTRA_TEAM_MAX_REVISION_LOOPS",
+        ),
+    )
     team_attachments_max_files: int = Field(
         default=5,
         validation_alias=AliasChoices(

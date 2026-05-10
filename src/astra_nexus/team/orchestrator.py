@@ -42,6 +42,14 @@ from astra_nexus.team.models import (
 from astra_nexus.team.profiles import DEFAULT_AGENT_PIPELINE, default_profiles_by_role
 from astra_nexus.team.prompting import AgentContext, AgentPrompt, TeamPromptBuilder
 from astra_nexus.team.provider import TeamErrorKind, TeamProvider, TeamProviderError
+from astra_nexus.team.review_protocol import (
+    build_final_package,
+    build_quality_criteria,
+    build_task_brief,
+    review_decision_from_qa_result,
+    review_notes_from_critic_result,
+    revision_requests_from_notes,
+)
 
 TRANSIENT_PROVIDER_ERROR_CODES = {
     "response_timeout",
@@ -104,6 +112,7 @@ class AsyncTeamOrchestrator:
         execution_plan: TeamExecutionPlan | None = None,
         max_parallel_agents: int = 2,
         parallel_agent_timeout_seconds: float | None = 240.0,
+        max_revision_loops: int = 1,
     ) -> None:
         self.provider = provider
         self.pipeline = list(pipeline or DEFAULT_AGENT_PIPELINE)
@@ -111,6 +120,7 @@ class AsyncTeamOrchestrator:
         self.requested_execution_plan = execution_plan
         self.max_parallel_agents = max(1, max_parallel_agents)
         self.parallel_agent_timeout_seconds = parallel_agent_timeout_seconds
+        self.max_revision_loops = max(0, max_revision_loops)
         self.prompt_builder = prompt_builder or TeamPromptBuilder()
         self.workspace_path = Path(workspace_path) if workspace_path is not None else None
         self.extra_instructions = tuple(extra_instructions or ())
@@ -130,6 +140,7 @@ class AsyncTeamOrchestrator:
     ) -> TeamRunOutcome:
         team_run = TeamRun(user_task=user_task, attachments=list(attachments))
         self._assign_execution_plan(team_run)
+        self._initialize_review_protocol(team_run)
         self.runs.append(team_run)
         self._start_run(team_run)
         return await self._execute_run(team_run)
@@ -139,6 +150,7 @@ class AsyncTeamOrchestrator:
         team_run.status = RunStatus.RUNNING
         team_run.completed_at = None
         self._assign_execution_plan(team_run)
+        self._initialize_review_protocol(team_run)
         self._append_event(
             team_run,
             RunEventType.RUN_STARTED,
@@ -158,6 +170,12 @@ class AsyncTeamOrchestrator:
 
         final_text = team_run.results[-1].content if team_run.results else ""
         team_run.final_text = final_text
+        team_run.final_package = build_final_package(
+            final_text=final_text,
+            brief=team_run.task_brief,
+            decision=team_run.review_decision,
+            applied_revision_count=team_run.revision_loops_count,
+        )
         team_run.status = RunStatus.COMPLETED
         team_run.error_message = None
         team_run.completed_at = utc_now()
@@ -185,6 +203,18 @@ class AsyncTeamOrchestrator:
         team_run.execution_mode = plan.mode
         team_run.execution_plan = plan
 
+    def _initialize_review_protocol(self, team_run: TeamRun) -> None:
+        if team_run.task_brief is None:
+            team_run.task_brief = build_task_brief(
+                original_user_input=team_run.user_task,
+                attachments=tuple(team_run.attachments),
+                created_by=AgentRole.COORDINATOR,
+            )
+        if not team_run.quality_criteria:
+            team_run.quality_criteria = list(
+                build_quality_criteria(source_agent=AgentRole.COORDINATOR)
+            )
+
     def _effective_execution_plan(self) -> TeamExecutionPlan:
         requested = self.requested_execution_plan or execution_plan_for_mode(
             self.requested_execution_mode,
@@ -211,12 +241,43 @@ class AsyncTeamOrchestrator:
                 await self._run_parallel_step(team_run=team_run, step=step, plan=plan)
             else:
                 for role in step.roles:
+                    if role == AgentRole.FINAL_COMPOSER:
+                        await self._run_revision_loop_if_needed(team_run)
                     await self._run_planned_role(
                         team_run=team_run,
                         role=role,
                         step=step,
                     )
             self._sort_run_agent_state(team_run)
+
+    async def _run_revision_loop_if_needed(self, team_run: TeamRun) -> None:
+        while (
+            team_run.review_decision is not None
+            and team_run.review_decision.needs_revision
+            and team_run.revision_loops_count < self.max_revision_loops
+        ):
+            loop_number = team_run.revision_loops_count + 1
+            await self._run_agent(
+                team_run=team_run,
+                profile=self.profiles_by_role[AgentRole.EDITOR],
+                dependencies=self._dependencies_for_role(team_run, AgentRole.EDITOR),
+                execution_step_id=f"revision_loop_{loop_number:02d}_editor",
+                execution_mode=TeamExecutionMode.SEQUENTIAL,
+            )
+            await self._run_agent(
+                team_run=team_run,
+                profile=self.profiles_by_role[AgentRole.QA_CONTROLLER],
+                dependencies=self._dependencies_for_role(team_run, AgentRole.QA_CONTROLLER),
+                execution_step_id=f"revision_loop_{loop_number:02d}_qa",
+                execution_mode=TeamExecutionMode.SEQUENTIAL,
+            )
+            team_run.revision_loops_count = loop_number
+            self._sort_run_agent_state(team_run)
+
+    def _dependencies_for_role(self, team_run: TeamRun, role: AgentRole) -> tuple[AgentRole, ...]:
+        if team_run.execution_plan is None:
+            return ()
+        return team_run.execution_plan.dependencies_for(role)
 
     async def _run_parallel_step(
         self,
@@ -433,6 +494,7 @@ class AsyncTeamOrchestrator:
             },
         )
         team_run.results.append(result)
+        self._apply_review_protocol_result(team_run=team_run, result=result)
         agent_task.status = AgentTaskStatus.COMPLETED
         agent_task.completed_at = utc_now()
         self._append_agent_event(
@@ -445,8 +507,35 @@ class AsyncTeamOrchestrator:
         )
         self._append_dialogue_turn(
             team_run,
-            build_agent_finish_turn(run_id=team_run.id, profile=profile),
+            build_agent_finish_turn(
+                run_id=team_run.id,
+                profile=profile,
+                needs_revision=(
+                    team_run.review_decision.needs_revision
+                    if profile.role == AgentRole.QA_CONTROLLER
+                    and team_run.review_decision is not None
+                    else None
+                ),
+            ),
         )
+
+    def _apply_review_protocol_result(self, *, team_run: TeamRun, result: AgentResult) -> None:
+        if result.profile.role == AgentRole.CRITIC:
+            notes = review_notes_from_critic_result(result.content)
+            team_run.review_notes.extend(notes)
+            team_run.revision_requests.extend(revision_requests_from_notes(notes))
+            return
+
+        if result.profile.role == AgentRole.QA_CONTROLLER:
+            decision, qa_note, revision_request = review_decision_from_qa_result(
+                result.content,
+                existing_notes=tuple(team_run.review_notes),
+            )
+            team_run.review_decision = decision
+            if qa_note is not None:
+                team_run.review_notes.append(qa_note)
+            if revision_request is not None:
+                team_run.revision_requests.append(revision_request)
 
     def _build_prompt(
         self,
@@ -465,6 +554,11 @@ class AsyncTeamOrchestrator:
                 previous_results=previous_results,
                 previous_events=tuple(team_run.events),
                 attachments=tuple(team_run.attachments),
+                task_brief=team_run.task_brief,
+                quality_criteria=tuple(team_run.quality_criteria),
+                review_notes=tuple(team_run.review_notes),
+                revision_requests=tuple(team_run.revision_requests),
+                review_decision=team_run.review_decision,
                 workspace_path=self.workspace_path,
                 extra_instructions=self.extra_instructions,
             ),

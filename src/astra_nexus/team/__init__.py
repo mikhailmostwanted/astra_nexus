@@ -65,6 +65,15 @@ from astra_nexus.team.profiles import (
 )
 from astra_nexus.team.prompting import AgentContext, AgentPrompt, TeamPromptBuilder
 from astra_nexus.team.provider import TeamProvider, TeamProviderError
+from astra_nexus.team.review_protocol import (
+    TeamFinalPackage,
+    TeamQualityCriterion,
+    TeamReviewDecision,
+    TeamReviewNote,
+    TeamReviewSeverity,
+    TeamRevisionRequest,
+    TeamTaskBrief,
+)
 from astra_nexus.team.runtime import (
     TeamActiveRun,
     TeamConversationController,
@@ -138,12 +147,19 @@ __all__ = [
     "TeamProviderError",
     "TeamPromptBuilder",
     "TeamRetryPolicy",
+    "TeamFinalPackage",
+    "TeamQualityCriterion",
+    "TeamReviewDecision",
+    "TeamReviewNote",
+    "TeamReviewSeverity",
+    "TeamRevisionRequest",
     "TeamRuntimeResponse",
     "TeamRuntimeState",
     "TeamRuntimeStatus",
     "TeamRun",
     "TeamRunOutcome",
     "TeamRunWorkspace",
+    "TeamTaskBrief",
     "RecordingTelegramBot",
     "TelegramOutgoingMessage",
     "TelegramTeamBridge",

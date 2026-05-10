@@ -34,6 +34,21 @@ from astra_nexus.team.models import (
     TeamRun,
 )
 from astra_nexus.team.profiles import default_profiles_by_role
+from astra_nexus.team.review_protocol import (
+    final_package_from_payload,
+    final_package_payload,
+    quality_criterion_from_payload,
+    quality_criterion_payload,
+    review_decision_from_payload,
+    review_decision_payload,
+    review_note_from_payload,
+    review_note_payload,
+    review_protocol_markdown,
+    revision_request_from_payload,
+    revision_request_payload,
+    task_brief_from_payload,
+    task_brief_payload,
+)
 
 
 class TeamRunWorkspace:
@@ -52,6 +67,27 @@ class TeamRunWorkspace:
         self._write_json(run_path / "results.json", self._results_payload(run.results))
         self._write_json(run_path / "events.json", self._events_payload(run.events))
         self._write_json(run_path / "messages.json", self._messages_payload(run.messages))
+        self._write_json(run_path / "task_brief.json", task_brief_payload(run.task_brief))
+        self._write_json(
+            run_path / "quality_criteria.json",
+            [quality_criterion_payload(criterion) for criterion in run.quality_criteria],
+        )
+        self._write_json(
+            run_path / "review_notes.json",
+            [review_note_payload(note) for note in run.review_notes],
+        )
+        self._write_json(
+            run_path / "revision_requests.json",
+            [revision_request_payload(request) for request in run.revision_requests],
+        )
+        self._write_json(
+            run_path / "review_decision.json",
+            review_decision_payload(run.review_decision),
+        )
+        self._write_json(
+            run_path / "final_package.json",
+            final_package_payload(run.final_package),
+        )
         if run.execution_plan is not None:
             self._write_json(
                 run_path / "execution_plan.json",
@@ -72,6 +108,10 @@ class TeamRunWorkspace:
         )
         (run_path / "execution_timeline.md").write_text(
             execution_timeline_markdown(run),
+            encoding="utf-8",
+        )
+        (run_path / "review_protocol.md").write_text(
+            review_protocol_markdown(run),
             encoding="utf-8",
         )
         (run_path / "final.md").write_text(run.final_text or "", encoding="utf-8")
@@ -118,6 +158,36 @@ class TeamRunWorkspace:
             if (run_path / "execution_plan.json").exists()
             else None
         )
+        task_brief_payload_data = (
+            self._read_json(run_path / "task_brief.json")
+            if (run_path / "task_brief.json").exists()
+            else None
+        )
+        quality_criteria_payload_data = (
+            self._read_json(run_path / "quality_criteria.json")
+            if (run_path / "quality_criteria.json").exists()
+            else []
+        )
+        review_notes_payload_data = (
+            self._read_json(run_path / "review_notes.json")
+            if (run_path / "review_notes.json").exists()
+            else []
+        )
+        revision_requests_payload_data = (
+            self._read_json(run_path / "revision_requests.json")
+            if (run_path / "revision_requests.json").exists()
+            else []
+        )
+        review_decision_payload_data = (
+            self._read_json(run_path / "review_decision.json")
+            if (run_path / "review_decision.json").exists()
+            else None
+        )
+        final_package_payload_data = (
+            self._read_json(run_path / "final_package.json")
+            if (run_path / "final_package.json").exists()
+            else None
+        )
         profiles = default_profiles_by_role()
 
         run = TeamRun(
@@ -131,8 +201,24 @@ class TeamRunWorkspace:
             completed_at=self._parse_optional_datetime(run_payload.get("finished_at")),
         )
         run.execution_mode = TeamExecutionMode(run_payload.get("execution_mode", "sequential"))
+        run.review_protocol_enabled = run_payload.get("review_protocol_enabled", True)
+        run.revision_loops_count = run_payload.get("revision_loops_count", 0)
         if execution_plan_payload_data is not None:
             run.execution_plan = execution_plan_from_payload(execution_plan_payload_data)
+        run.task_brief = task_brief_from_payload(task_brief_payload_data)
+        run.quality_criteria = [
+            quality_criterion_from_payload(criterion)
+            for criterion in quality_criteria_payload_data or []
+        ]
+        run.review_notes = [
+            review_note_from_payload(note) for note in review_notes_payload_data or []
+        ]
+        run.revision_requests = [
+            revision_request_from_payload(request)
+            for request in revision_requests_payload_data or []
+        ]
+        run.review_decision = review_decision_from_payload(review_decision_payload_data)
+        run.final_package = final_package_from_payload(final_package_payload_data)
         run.attachments = [
             attachment_from_payload(attachment)
             for attachment in attachments_payload.get("attachments", [])
@@ -215,6 +301,12 @@ class TeamRunWorkspace:
             "attachments_count": len(run.attachments),
             "dialogue_turns_count": len(run.dialogue_turns),
             "execution_mode": TeamExecutionMode(run.execution_mode).value,
+            "review_protocol_enabled": run.review_protocol_enabled,
+            "revision_loops_count": run.revision_loops_count,
+            "review_notes_count": len(run.review_notes),
+            "final_approved": run.review_decision.approved
+            if run.review_decision is not None
+            else None,
             "agents": self._agent_summaries(run),
         }
 

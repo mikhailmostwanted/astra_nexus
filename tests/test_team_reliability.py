@@ -141,7 +141,7 @@ def test_previous_results_are_limited_in_prompt_but_full_result_is_saved(tmp_pat
 
     assert analyst_prompt is not None
     assert "Контекст предыдущих результатов сокращён" in analyst_prompt.user_prompt
-    assert len(analyst_prompt.user_prompt) < len(long_result) + 300
+    assert ("x" * 200) not in analyst_prompt.user_prompt
     assert outcome.run.results[0].content == long_result
     assert long_result in (run_path / "agent_results" / "coordinator.md").read_text(
         encoding="utf-8"

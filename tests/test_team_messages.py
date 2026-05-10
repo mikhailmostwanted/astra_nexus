@@ -78,7 +78,7 @@ def test_orchestrator_emits_dialogue_in_main_chat_and_events_in_log_chat() -> No
     ]
     assert main_messages[0].author_role == AgentRole.COORDINATOR
     assert main_messages[0].author_name == "Артём"
-    assert "Босс, взял задачу" in main_messages[0].text
+    assert "Понял задачу" in main_messages[0].text
     assert main_messages[-1].text == "Готово, финальная версия собрана."
     assert outcome.run.messages == sink.messages
 
@@ -168,7 +168,7 @@ def test_workspace_saves_messages_as_json_and_markdown(tmp_path) -> None:
     ]
     assert "## Main Chat" in messages_markdown
     assert "[Артём]" in messages_markdown
-    assert "Босс, взял задачу" in messages_markdown
+    assert "Понял задачу" in messages_markdown
     assert "## Log Chat" in messages_markdown
     assert "[Лог]" in messages_markdown
 

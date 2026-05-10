@@ -143,7 +143,7 @@ class TeamIntakeRouter:
                 target_run_id=team_input.failed_run_id,
             )
         if team_input.attachments_count > 0:
-            if text:
+            if text and self._looks_like_new_task(text):
                 return self._decision(
                     TeamInputIntent.FILE_TASK,
                     0.88,
@@ -154,9 +154,11 @@ class TeamIntakeRouter:
             return self._decision(
                 TeamInputIntent.FILE_TASK,
                 0.82,
-                "attachments without task text",
-                "Вижу файл. Запускаю команду.",
-                should_start_run=True,
+                "attachments without clear task text",
+                (
+                    "Я вижу файл, но не понимаю, что именно с ним сделать. "
+                    "Скажи, нужно проверить, переписать, сократить или собрать итоговый документ?"
+                ),
             )
         if team_input.active_run_id and self._contains_any(text, self.followup_phrases):
             return self._decision(

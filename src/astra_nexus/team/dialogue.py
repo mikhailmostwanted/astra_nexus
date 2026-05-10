@@ -70,7 +70,7 @@ ROLE_PHASES = {
 
 
 START_TEXTS = {
-    AgentRole.COORDINATOR: "Босс, взял задачу. Сначала разложу её на нормальные шаги.",
+    AgentRole.COORDINATOR: "Понял задачу. Сейчас сформулирую цель и рабочий маршрут для команды.",
     AgentRole.ANALYST: "Разберу вводные и вытащу главное без лишней воды.",
     AgentRole.CRITIC: "Я посмотрю слабые места и что тут может быть не так.",
     AgentRole.EDITOR: "Окей, правлю по замечаниям и собираю более чистый вариант.",
@@ -111,13 +111,25 @@ def build_agent_start_turn(
     )
 
 
-def build_agent_finish_turn(*, run_id: str, profile: AgentProfile) -> TeamDialogueTurn:
+def build_agent_finish_turn(
+    *,
+    run_id: str,
+    profile: AgentProfile,
+    needs_revision: bool | None = None,
+) -> TeamDialogueTurn:
+    text = FINISH_TEXTS[profile.role]
+    if profile.role == AgentRole.QA_CONTROLLER:
+        text = (
+            "Нужна одна доработка перед финалом."
+            if needs_revision
+            else "Проверка пройдена, можно собирать финал."
+        )
     return TeamDialogueTurn(
         run_id=run_id,
         agent_role=profile.role,
         agent_display_name=profile.display_name,
         phase=ROLE_PHASES[profile.role],
-        text=FINISH_TEXTS[profile.role],
+        text=text,
         reply_to_role=AgentRole.CRITIC if profile.role == AgentRole.EDITOR else None,
         style=TeamDialogueStyle.SUMMARY,
     )

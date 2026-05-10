@@ -109,6 +109,7 @@
 - Добавлен Files for Team Tasks v1: attachments manifest, `input_files/`, txt/md extraction и file context в prompts.
 - Добавлен Team Dialogue v1: живой transcript агентов, `team_chat.json`/`team_chat.md` и разделение main-chat/log-chat.
 - Добавлен Parallel Agents Foundation v1: execution plan, parallel fake-provider режим, fallback на sequential для NoDriver.
+- Добавлен Team Review Protocol v1: task brief, критерии качества, review notes, revision requests, QA decision, один revision loop и final package.
 
 ---
 

@@ -24,13 +24,14 @@ class FakeTeamProvider(TeamProvider):
         self,
         *,
         fail_on: AgentRole | str | None = None,
-        responses: Mapping[AgentRole | str, str] | None = None,
+        responses: Mapping[AgentRole | str, str | Sequence[str]] | None = None,
     ) -> None:
         self.fail_on = AgentRole(fail_on) if isinstance(fail_on, str) else fail_on
         self.responses = {
             AgentRole(role) if isinstance(role, str) else role: response
             for role, response in (responses or {}).items()
         }
+        self._response_indexes: dict[AgentRole, int] = {}
         self.calls: list[FakeProviderCall] = []
 
     async def generate(
@@ -55,5 +56,12 @@ class FakeTeamProvider(TeamProvider):
                 agent_id=profile.profile_id,
             )
         if profile.role in self.responses:
-            return self.responses[profile.role]
+            response = self.responses[profile.role]
+            if isinstance(response, str):
+                return response
+            index = self._response_indexes.get(profile.role, 0)
+            self._response_indexes[profile.role] = index + 1
+            if not response:
+                return ""
+            return response[min(index, len(response) - 1)]
         return f"fake:{profile.role.value}:{user_task}:context={len(previous_results)}"

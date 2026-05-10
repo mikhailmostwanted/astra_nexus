@@ -34,7 +34,7 @@ def test_dialogue_turns_are_created_in_pipeline_order() -> None:
         AgentRole.FINAL_COMPOSER,
     ]
     assert visible_agent_turns[0].phase == TeamDialoguePhase.COORDINATION
-    assert "Босс, взял задачу" in visible_agent_turns[0].text
+    assert "Понял задачу" in visible_agent_turns[0].text
     assert visible_agent_turns[-1].text == "Финальный ответ собран."
 
 
@@ -87,7 +87,7 @@ def test_workspace_saves_team_chat_json_and_markdown(tmp_path) -> None:
     assert team_chat_payload["run_id"] == outcome.run.id
     assert len(team_chat_payload["turns"]) == len(outcome.run.dialogue_turns)
     assert "[Артём]" in team_chat_markdown
-    assert "Босс, взял задачу" in team_chat_markdown
+    assert "Понял задачу" in team_chat_markdown
     assert "Финальный ответ собран." in team_chat_markdown
 
 
@@ -129,7 +129,7 @@ def test_dialogue_messages_go_to_main_chat_and_events_to_log_chat() -> None:
     ]
 
     assert [message.text for message in main_messages] == [
-        "Босс, взял задачу. Сначала разложу её на нормальные шаги.",
+        "Понял задачу. Сейчас сформулирую цель и рабочий маршрут для команды.",
         "Маршрут есть, передаю на разбор.",
         "Готово, финальная версия собрана.",
     ]

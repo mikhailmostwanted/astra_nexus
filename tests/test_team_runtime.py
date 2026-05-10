@@ -72,6 +72,22 @@ def test_runtime_empty_input_does_not_create_run() -> None:
     assert controller.state.last_run_id is None
 
 
+def test_runtime_file_without_clear_task_does_not_create_run() -> None:
+    controller = TeamConversationController(provider=FakeTeamProvider())
+
+    response = asyncio.run(controller.handle(TeamInput(text="вот файл", attachments_count=1)))
+
+    assert response.decision.intent == TeamInputIntent.FILE_TASK
+    assert response.decision.should_start_run is False
+    assert response.status == TeamRuntimeStatus.IDLE
+    assert response.run_id is None
+    assert controller.state.last_run_id is None
+    assert response.user_visible_reply == (
+        "Я вижу файл, но не понимаю, что именно с ним сделать. "
+        "Скажи, нужно проверить, переписать, сократить или собрать итоговый документ?"
+    )
+
+
 def test_runtime_stop_all_clears_active_runs() -> None:
     state = TeamRuntimeState()
     state.active_runs["team_run_active"] = TeamActiveRun(run_id="team_run_active")

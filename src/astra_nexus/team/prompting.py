@@ -10,6 +10,13 @@ from astra_nexus.team.attachments import (
     TeamInputAttachment,
 )
 from astra_nexus.team.models import AgentProfile, AgentResult, AgentRole, RunEvent
+from astra_nexus.team.review_protocol import (
+    TeamQualityCriterion,
+    TeamReviewDecision,
+    TeamReviewNote,
+    TeamRevisionRequest,
+    TeamTaskBrief,
+)
 
 DEFAULT_PREVIOUS_RESULTS_MAX_CHARS = 16000
 
@@ -23,6 +30,11 @@ class AgentContext:
     previous_results: Sequence[AgentResult] = ()
     previous_events: Sequence[RunEvent] = ()
     attachments: Sequence[TeamInputAttachment] = ()
+    task_brief: TeamTaskBrief | None = None
+    quality_criteria: Sequence[TeamQualityCriterion] = ()
+    review_notes: Sequence[TeamReviewNote] = ()
+    revision_requests: Sequence[TeamRevisionRequest] = ()
+    review_decision: TeamReviewDecision | None = None
     workspace_path: Path | str | None = None
     extra_instructions: Sequence[str] = ()
 
@@ -60,6 +72,10 @@ class TeamPromptBuilder:
                 "previous_results_max_chars": self.previous_results_max_chars,
                 "previous_events_count": len(context.previous_events),
                 "attachments_count": len(context.attachments),
+                "review_protocol_enabled": context.task_brief is not None,
+                "quality_criteria_count": len(context.quality_criteria),
+                "review_notes_count": len(context.review_notes),
+                "revision_requests_count": len(context.revision_requests),
                 "workspace_path": str(context.workspace_path) if context.workspace_path else None,
             },
         )
@@ -104,6 +120,16 @@ class TeamPromptBuilder:
             context.user_task,
             "",
             self._attachments_section(context.attachments),
+            "",
+            self._task_brief_section(context.task_brief),
+            "",
+            self._quality_criteria_section(context.quality_criteria),
+            "",
+            self._review_notes_section(context.review_notes),
+            "",
+            self._revision_requests_section(context.revision_requests),
+            "",
+            self._review_decision_section(context.review_decision),
             "",
             previous_results_section,
         ]
@@ -187,10 +213,101 @@ class TeamPromptBuilder:
                 )
         return "\n".join(lines)
 
+    def _task_brief_section(self, brief: TeamTaskBrief | None) -> str:
+        if brief is None:
+            return "Бриф задачи:\nБриф пока не создан."
+        lines = [
+            "Бриф задачи:",
+            f"- Исходный ввод: {brief.original_user_input}",
+            f"- Нормализованная цель: {brief.normalized_goal}",
+            f"- Ожидаемый результат: {brief.expected_output}",
+            f"- Создал: {brief.created_by}",
+        ]
+        if brief.available_attachments:
+            lines.append("- Доступные вложения: " + ", ".join(brief.available_attachments))
+        if brief.constraints:
+            lines.append("- Ограничения:")
+            lines.extend(f"  - {constraint}" for constraint in brief.constraints)
+        if brief.open_questions:
+            lines.append("- Открытые вопросы:")
+            lines.extend(f"  - {question}" for question in brief.open_questions)
+        if brief.risk_notes:
+            lines.append("- Риски:")
+            lines.extend(f"  - {risk}" for risk in brief.risk_notes)
+        return "\n".join(lines)
+
+    def _quality_criteria_section(
+        self,
+        quality_criteria: Sequence[TeamQualityCriterion],
+    ) -> str:
+        if not quality_criteria:
+            return "Критерии качества:\nКритерии пока не заданы."
+        lines = ["Критерии качества:"]
+        for criterion in quality_criteria:
+            required = "обязательный" if criterion.required else "желательный"
+            lines.extend(
+                [
+                    f"- {criterion.criterion_id}: {criterion.title} ({required})",
+                    f"  {criterion.description}",
+                    f"  Источник: {criterion.source_agent}",
+                ]
+            )
+        return "\n".join(lines)
+
+    def _review_notes_section(self, review_notes: Sequence[TeamReviewNote]) -> str:
+        if not review_notes:
+            return "Замечания критика:\nПока замечаний нет."
+        lines = ["Замечания критика:"]
+        for note in review_notes:
+            target = note.target_role or note.target_artifact or "общий результат"
+            lines.extend(
+                [
+                    f"- {note.note_id} [{note.severity.value}] {note.author_role} -> {target}",
+                    f"  Замечание: {note.message}",
+                    f"  Исправление: {note.suggested_fix}",
+                ]
+            )
+        return "\n".join(lines)
+
+    def _revision_requests_section(
+        self,
+        revision_requests: Sequence[TeamRevisionRequest],
+    ) -> str:
+        if not revision_requests:
+            return "Запросы на доработку:\nПока запросов на доработку нет."
+        lines = ["Запросы на доработку:"]
+        for request in revision_requests:
+            must_fix = "да" if request.must_fix_before_final else "нет"
+            related = ", ".join(request.related_notes) or "нет"
+            lines.extend(
+                [
+                    f"- {request.requested_by} -> {request.target_role}",
+                    f"  Нужно исправить до финала: {must_fix}",
+                    f"  Связанные замечания: {related}",
+                    f"  Инструкции: {request.instructions}",
+                ]
+            )
+        return "\n".join(lines)
+
+    def _review_decision_section(self, decision: TeamReviewDecision | None) -> str:
+        if decision is None:
+            return "Решение QA:\nQA ещё не принимал решение."
+        blocking = ", ".join(decision.blocking_notes) or "нет"
+        return "\n".join(
+            [
+                "Решение QA:",
+                f"- Принято: {decision.approved}",
+                f"- Нужна доработка: {decision.needs_revision}",
+                f"- Блокирующие замечания: {blocking}",
+                f"- Резюме: {decision.summary}",
+            ]
+        )
+
 
 ROLE_INSTRUCTIONS = {
     AgentRole.COORDINATOR: "\n".join(
         [
+            "- формулирует task brief: цель, ожидаемый результат, ограничения и риски.",
             "- понимает задачу пользователя и уточняет смысл.",
             "- раскладывает работу на этапы.",
             "- не пишет финальный ответ.",
@@ -200,6 +317,7 @@ ROLE_INSTRUCTIONS = {
     ),
     AgentRole.ANALYST: "\n".join(
         [
+            "- опирается на бриф задачи и критерии качества.",
             "- разбирает факты, структуру, вводные данные и ограничения.",
             "- отделяет известное от предположений.",
             "- готовит материал, на который смогут опереться следующие агенты.",
@@ -208,6 +326,8 @@ ROLE_INSTRUCTIONS = {
     ),
     AgentRole.CRITIC: "\n".join(
         [
+            "- проверяет результат по брифу и критериям качества.",
+            "- формулирует замечания так, чтобы их можно было превратить в review notes.",
             "- ищет слабые места.",
             "- проверяет, чего не хватает.",
             "- формулирует вопросы к тексту, файлу или решению.",
@@ -218,6 +338,7 @@ ROLE_INSTRUCTIONS = {
     ),
     AgentRole.EDITOR: "\n".join(
         [
+            "- явно учитывает запросы на доработку и связанные замечания критика.",
             "- берёт план и критику.",
             "- улучшает текст или решение.",
             "- делает ответ яснее, сильнее и человечнее.",
@@ -227,6 +348,7 @@ ROLE_INSTRUCTIONS = {
     ),
     AgentRole.QA_CONTROLLER: "\n".join(
         [
+            "- возвращает решение: принято или нужна доработка.",
             "- проверяет готовый вариант.",
             "- ищет ошибки, противоречия, пустые утверждения и недосказанность.",
             "- пишет, что надо поправить перед финалом.",
@@ -235,6 +357,7 @@ ROLE_INSTRUCTIONS = {
     ),
     AgentRole.FINAL_COMPOSER: "\n".join(
         [
+            "- собирает final package: финальный текст, резюме брифа, ограничения и итог QA.",
             "- собирает финальный ответ.",
             "- учитывает весь предыдущий контекст.",
             "- пишет уже пользователю.",

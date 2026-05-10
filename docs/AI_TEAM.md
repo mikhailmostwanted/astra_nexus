@@ -163,7 +163,7 @@ intent/router layer.
 - `TeamDialogueStyle` - краткая метка тона/назначения turn: working, summary, error.
 
 Main chat теперь должен получать именно dialogue turns: короткие рабочие реплики вроде
-"Босс, взял задачу. Сначала разложу её на нормальные шаги." Технические `RunEvent`
+"Понял задачу. Сейчас сформулирую цель и рабочий маршрут для команды." Технические `RunEvent`
 (`run_started`, `agent_started`, `agent_finished`, `run_finished`) остаются в `log_chat`.
 Это разделяет будущую Telegram-супергруппу:
 
@@ -261,6 +261,74 @@ astra-nexus-team-parallel-preview "проверь идею AI-команды"
 - parallel работает как архитектурный/test слой поверх provider capability;
 - следующий шаг к настоящей параллельности - несколько безопасно управляемых agent sessions
   и явный scheduler для реальных provider transports.
+
+## Team Review Protocol v1
+
+Team Review Protocol v1 добавляет поверх agent pipeline детерминированный слой проверки и
+доработки. Это не JSON-режим LLM и не отдельный ChatGPT-чат: protocol-модели хранятся как
+internal metadata вокруг обычных текстовых результатов агентов.
+
+Основные сущности:
+
+- `TeamTaskBrief` - бриф задачи: исходный ввод, нормализованная цель, ожидаемый результат,
+  ограничения, доступные вложения, открытые вопросы, риски, автор и timestamp.
+- `TeamQualityCriterion` - критерий качества: id, название, описание, обязательность и агент,
+  который его задал.
+- `TeamReviewNote` - замечание проверки: авторская роль, severity
+  (`info`, `minor`, `major`, `critical`), цель замечания, сообщение и suggested fix.
+- `TeamRevisionRequest` - запрос на доработку для редактора: кто запросил, инструкции,
+  связанные notes и признак `must_fix_before_final`.
+- `TeamReviewDecision` - решение QA: принято, нужна ли доработка, блокирующие notes и summary.
+- `TeamFinalPackage` - финальная упаковка: финальный текст, summary брифа, число применённых
+  revision loops, оставшиеся ограничения и summary проверки качества.
+
+Поток v1:
+
+1. Coordinator создаёт task brief и базовые критерии качества.
+2. Analyst, critic, editor, QA и final composer получают brief и criteria в prompt.
+3. Critic формирует review notes; orchestrator превращает их в revision requests для editor.
+4. Editor явно учитывает revision requests в prompt и отдаёт улучшенную версию.
+5. QA Controller возвращает review decision.
+6. Если QA ставит `needs_revision=true`, orchestrator запускает один дополнительный loop:
+   `editor -> qa_controller`.
+7. Final Composer собирает финальный ответ, а orchestrator сохраняет `TeamFinalPackage`.
+
+Лимит revision loop управляется настройкой `TEAM_MAX_REVISION_LOOPS` /
+`ASTRA_TEAM_MAX_REVISION_LOOPS`, default `1`. Это защищает pipeline от бесконечной доработки:
+если QA продолжает просить правки после лимита, финальный пакет сохраняет это как limitation.
+
+Workspace дополнен файлами:
+
+- `task_brief.json`
+- `quality_criteria.json`
+- `review_notes.json`
+- `revision_requests.json`
+- `review_decision.json`
+- `final_package.json`
+- `review_protocol.md`
+
+`run.json` дополнен полями:
+
+- `review_protocol_enabled`
+- `revision_loops_count`
+- `review_notes_count`
+- `final_approved`
+
+Dialogue v1 теперь отражает protocol-поведение живыми репликами: coordinator формулирует, что
+понял; critic говорит, что проверяет слабые места; editor говорит, что правит; QA сообщает,
+принято или нужна доработка; final composer сообщает, что собирает финал. Технические детали
+остаются в log channel.
+
+Preview без реального provider:
+
+```bash
+astra-nexus-team-review-preview "проверь идею AI-команды"
+astra-nexus-team-review-preview --file docs/AI_TEAM.md "проверь файл и найди слабые места"
+```
+
+Важно: Team Review Protocol v1 не является self-improving режимом, не даёт агентам доступ к
+коду проекта и не включает Codex-режим. Он проверяет и улучшает только текущий пользовательский
+результат внутри одного team run.
 
 ## Team Intake / Intent Router
 

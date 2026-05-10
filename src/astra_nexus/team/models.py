@@ -12,6 +12,14 @@ if TYPE_CHECKING:
     from astra_nexus.team.dialogue import TeamDialogueTurn
     from astra_nexus.team.execution_plan import TeamExecutionPlan
     from astra_nexus.team.messages import TeamMessage
+    from astra_nexus.team.review_protocol import (
+        TeamFinalPackage,
+        TeamQualityCriterion,
+        TeamReviewDecision,
+        TeamReviewNote,
+        TeamRevisionRequest,
+        TeamTaskBrief,
+    )
 
 
 def utc_now() -> datetime:
@@ -127,6 +135,14 @@ class TeamRun:
     attachments: list[TeamInputAttachment] = field(default_factory=list)
     execution_mode: Any = "sequential"
     execution_plan: TeamExecutionPlan | None = None
+    review_protocol_enabled: bool = True
+    task_brief: TeamTaskBrief | None = None
+    quality_criteria: list[TeamQualityCriterion] = field(default_factory=list)
+    review_notes: list[TeamReviewNote] = field(default_factory=list)
+    revision_requests: list[TeamRevisionRequest] = field(default_factory=list)
+    review_decision: TeamReviewDecision | None = None
+    final_package: TeamFinalPackage | None = None
+    revision_loops_count: int = 0
     final_text: str | None = None
     error_message: str | None = None
     created_at: datetime = field(default_factory=utc_now)
