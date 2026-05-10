@@ -183,6 +183,54 @@ intent/router layer.
 Позже можно добавить LLM-router, но только поверх стабильной rule-based базы, чтобы
 Telegram-диалог оставался предсказуемым.
 
+## Team Runtime / Conversation Controller
+
+`astra_nexus.team.runtime` связывает intake-router, orchestrator, workspace, resume-flow
+и `TeamMessageSink` в один управляемый runtime-flow. Именно к этому слою позже должен
+подключаться Telegram bridge: Telegram будет отдавать входящее сообщение в runtime, а не
+вызывать `AsyncTeamOrchestrator` напрямую.
+
+Основные сущности:
+
+- `TeamRuntimeState` - in-memory состояние runtime: active runs, stopped runs,
+  `last_run_id`, `last_completed_run_id`, `last_failed_run_id`.
+- `TeamActiveRun` - запись активного run с cancellation-полями: `stop_requested`,
+  `stopped_at`, `stop_reason`.
+- `TeamRuntimeStatus` - статус ответа runtime: `idle`, `running`, `completed`,
+  `failed`, `cancelled`.
+- `TeamRuntimeResponse` - ответ controller для основного чата: decision, run id,
+  final text, workspace path и `user_visible_reply`.
+- `TeamConversationController` - принимает `TeamInput` или текст, вызывает
+  `TeamIntakeRouter`, решает запускать/не запускать run, сохраняет workspace и обновляет
+  state.
+
+Обычный диалог (`casual_chat`), пустой ввод (`empty_input`) и неизвестный ввод
+(`unknown`) не создают `TeamRun`. Runtime просто возвращает `user_visible_reply`.
+Новый run создаётся только для intent, где это явно разрешено: `new_task`, file task с
+текстом, а также временная обработка `task_followup` и `revise_previous_result` как новой
+контекстной задачи.
+
+`status_request` читает runtime state и возвращает активные runs или последний
+completed/failed run. `stop_all` пока не убивает реальные provider/browser процессы, но
+помечает active runs как stopped/cancelled и очищает in-memory registry. Это foundation
+для будущей безопасной остановки Telegram-задач.
+
+Текущие ограничения:
+
+- registry только in-memory, без SQLite/Redis;
+- нет реального parallel execution;
+- Telegram API не подключён;
+- stop/cancel пока архитектурный флаг, а не принудительное завершение NoDriver.
+
+Preview runtime-flow без NoDriver:
+
+```bash
+astra-nexus-team-runtime-preview "брат че думаешь"
+astra-nexus-team-runtime-preview "сделай краткий план AI-команды"
+astra-nexus-team-runtime-preview "статус"
+astra-nexus-team-runtime-preview "стоп все"
+```
+
 ## Retry policy
 
 AI Team pipeline выполняет агентов последовательно, но каждый агентский шаг может быть

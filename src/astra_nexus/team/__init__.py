@@ -1,7 +1,5 @@
 from astra_nexus.team.fake_provider import FakeProviderCall, FakeTeamProvider
 from astra_nexus.team.intake import (
-    TeamConversationController,
-    TeamConversationResult,
     TeamInput,
     TeamInputIntent,
     TeamIntakeDecision,
@@ -37,6 +35,13 @@ from astra_nexus.team.profiles import (
 )
 from astra_nexus.team.prompting import AgentContext, AgentPrompt, TeamPromptBuilder
 from astra_nexus.team.provider import TeamProvider, TeamProviderError
+from astra_nexus.team.runtime import (
+    TeamActiveRun,
+    TeamConversationController,
+    TeamRuntimeResponse,
+    TeamRuntimeState,
+    TeamRuntimeStatus,
+)
 from astra_nexus.team.workspace import TeamRunWorkspace
 
 __all__ = [
@@ -63,8 +68,8 @@ __all__ = [
     "TeamMessageRenderer",
     "TeamMessageSink",
     "TeamMessageType",
+    "TeamActiveRun",
     "TeamConversationController",
-    "TeamConversationResult",
     "TeamInput",
     "TeamInputIntent",
     "TeamIntakeDecision",
@@ -73,6 +78,9 @@ __all__ = [
     "TeamProviderError",
     "TeamPromptBuilder",
     "TeamRetryPolicy",
+    "TeamRuntimeResponse",
+    "TeamRuntimeState",
+    "TeamRuntimeStatus",
     "TeamRun",
     "TeamRunOutcome",
     "TeamRunWorkspace",

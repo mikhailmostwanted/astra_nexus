@@ -27,6 +27,7 @@ astra-nexus-team-ask = "astra_nexus.team.ask:main"
 astra-nexus-team-chat-preview = "astra_nexus.team.chat_preview:main"
 astra-nexus-team-intake-preview = "astra_nexus.team.intake_preview:main"
 astra-nexus-team-resume = "astra_nexus.team.resume:main"
+astra-nexus-team-runtime-preview = "astra_nexus.team.runtime_preview:main"
 astra-nexus-team-smoke = "astra_nexus.team.smoke:main"
 
 [project.optional-dependencies]
