@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,24 +41,31 @@ DEFAULT_PROVIDER = "fake"
 class TelegramTeamBridgeConfig:
     provider: str = DEFAULT_PROVIDER
     workspace_root: Path = Path("data/team_runs")
-    uploads_root: Path = Path("data/team_uploads")
+    uploads_root: Path = Path("data/team_telegram_downloads")
     attachment_max_files: int = 5
     attachment_max_bytes: int = 10 * 1024 * 1024
     attachment_text_max_chars: int = 20000
     log_chat_id: int | None = None
     allowed_chat_ids: tuple[int, ...] = ()
+    environment: str = "local"
+    send_typing: bool = True
+    human_messages: bool = True
 
     @classmethod
     def from_settings(cls, settings: Settings) -> TelegramTeamBridgeConfig:
+        max_file_size_mb = max(1, settings.team_telegram_max_file_size_mb)
         return cls(
             provider=settings.team_telegram_provider,
             workspace_root=settings.team_runs_dir,
-            uploads_root=settings.team_uploads_dir,
+            uploads_root=settings.team_telegram_downloads_dir,
             attachment_max_files=settings.team_attachments_max_files,
-            attachment_max_bytes=settings.team_attachment_max_bytes,
+            attachment_max_bytes=max_file_size_mb * 1024 * 1024,
             attachment_text_max_chars=settings.team_attachment_text_max_chars,
             log_chat_id=settings.team_telegram_log_chat_id,
             allowed_chat_ids=_parse_allowed_chat_ids(settings.team_telegram_allowed_chat_ids),
+            environment=settings.environment,
+            send_typing=settings.team_telegram_send_typing,
+            human_messages=settings.team_telegram_human_messages,
         )
 
 
@@ -66,36 +74,73 @@ class TelegramOutgoingMessage:
     chat_id: int
     text: str
     channel: TeamMessageChannel = TeamMessageChannel.MAIN_CHAT
+    send_typing: bool = False
+
+
+@dataclass(frozen=True)
+class TelegramChatAction:
+    chat_id: int
+    action: str
 
 
 class RecordingTelegramBot:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         self.messages: list[TelegramOutgoingMessage] = []
+        self.chat_actions: list[TelegramChatAction] = []
 
     async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> TelegramOutgoingMessage:
         message = TelegramOutgoingMessage(
             chat_id=chat_id,
             text=text,
             channel=kwargs.get("channel", TeamMessageChannel.MAIN_CHAT),
+            send_typing=kwargs.get("send_typing", False),
         )
         self.messages.append(message)
         return message
 
+    async def send_chat_action(self, chat_id: int, action: str, **kwargs: Any) -> None:
+        self.chat_actions.append(TelegramChatAction(chat_id=chat_id, action=action))
+
+
+class _LivePreviewProvider(FakeTeamProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+        self._paused_once = False
+
+    async def generate(self, **kwargs: Any) -> str:
+        profile = kwargs["profile"]
+        if profile.role.value == "coordinator" and not self._paused_once:
+            self._paused_once = True
+            await self.release.wait()
+        return await super().generate(**kwargs)
+
 
 class TelegramTeamMessageSink(TeamMessageSink):
-    def __init__(self, *, chat_id: int, log_chat_id: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        chat_id: int,
+        log_chat_id: int | None = None,
+        human_messages: bool = True,
+    ) -> None:
         self.chat_id = chat_id
         self.log_chat_id = log_chat_id
+        self.human_messages = human_messages
         self.outbox: list[TelegramOutgoingMessage] = []
         self.auto_sender: Callable[[TelegramOutgoingMessage], None] | None = None
 
     def publish(self, message: TeamMessage) -> None:
-        if message.channel == TeamMessageChannel.DEBUG and self.log_chat_id is None:
+        if message.channel in {TeamMessageChannel.LOG_CHAT, TeamMessageChannel.DEBUG}:
+            if self.log_chat_id is None:
+                return
+        elif message.channel == TeamMessageChannel.MAIN_CHAT and not self.human_messages:
             return
         outgoing = TelegramOutgoingMessage(
             chat_id=self._target_chat_id(message.channel),
             text=self.render(message),
             channel=message.channel,
+            send_typing=message.channel == TeamMessageChannel.MAIN_CHAT,
         )
         if self.auto_sender is not None:
             self.auto_sender(outgoing)
@@ -104,12 +149,21 @@ class TelegramTeamMessageSink(TeamMessageSink):
 
     def render(self, message: TeamMessage) -> str:
         if message.channel == TeamMessageChannel.LOG_CHAT:
-            author = "Лог"
+            return self._render_log(message)
         elif message.channel == TeamMessageChannel.DEBUG:
             author = "Debug"
         else:
             author = message.author_name or "Команда"
         return f"[{author}] {message.text}"
+
+    def _render_log(self, message: TeamMessage) -> str:
+        details = []
+        for key in ("event_type", "run_id", "job_id", "intent", "status", "workspace"):
+            value = message.metadata.get(key)
+            if value:
+                details.append(f"{key}={value}")
+        suffix = f" ({'; '.join(details)})" if details else ""
+        return f"[Лог] {message.text}{suffix}"
 
     def pop_outbox(self) -> list[TelegramOutgoingMessage]:
         messages = list(self.outbox)
@@ -152,7 +206,11 @@ class TelegramTeamSessionRegistry:
 
     def session(self, chat_id: int) -> TelegramTeamSession:
         if chat_id not in self.sessions:
-            sink = TelegramTeamMessageSink(chat_id=chat_id, log_chat_id=self.config.log_chat_id)
+            sink = TelegramTeamMessageSink(
+                chat_id=chat_id,
+                log_chat_id=self.config.log_chat_id,
+                human_messages=self.config.human_messages,
+            )
             self.sessions[chat_id] = TelegramTeamSession(
                 controller=TeamConversationController(
                     provider=self.provider_factory(),
@@ -212,7 +270,7 @@ class TelegramTeamBridge:
             await self._send(
                 TelegramOutgoingMessage(
                     chat_id=chat_id,
-                    text="Этот чат не разрешён для AI-команды.",
+                    text="Этот чат не подключён к AI-команде.",
                 )
             )
             return None
@@ -288,17 +346,30 @@ class TelegramTeamBridge:
             self._watch_tasks.difference_update(tasks)
 
     async def _send(self, message: TelegramOutgoingMessage) -> None:
+        if message.send_typing and self.config.send_typing:
+            await self._send_typing(message.chat_id)
         if isinstance(self.bot, RecordingTelegramBot):
             await self.bot.send_message(
                 chat_id=message.chat_id,
                 text=message.text,
                 channel=message.channel,
+                send_typing=message.send_typing,
             )
             return
         await self.bot.send_message(chat_id=message.chat_id, text=message.text)
 
+    async def _send_typing(self, chat_id: int) -> None:
+        send_chat_action = getattr(self.bot, "send_chat_action", None)
+        if send_chat_action is None:
+            return
+        result = send_chat_action(chat_id=chat_id, action="typing")
+        if asyncio.iscoroutine(result):
+            await result
+
     def _chat_allowed(self, chat_id: int) -> bool:
-        return not self.config.allowed_chat_ids or chat_id in self.config.allowed_chat_ids
+        if self.config.allowed_chat_ids:
+            return chat_id in self.config.allowed_chat_ids
+        return self.config.environment.lower() in {"local", "dev", "development", "test"}
 
     def _session(self, chat_id: int) -> TelegramTeamSession:
         session = self.registry.session(chat_id)
@@ -309,6 +380,60 @@ class TelegramTeamBridge:
         task = asyncio.create_task(self._send(message))
         self._send_tasks.add(task)
         task.add_done_callback(self._send_tasks.discard)
+
+    def _schedule_log(
+        self,
+        *,
+        text: str,
+        job_id: str,
+        run_id: str | None = None,
+        intent: str | None = None,
+        status: str | None = None,
+        workspace: Path | None = None,
+    ) -> None:
+        if self.config.log_chat_id is None:
+            return
+        task = asyncio.create_task(
+            self._send_log(
+                text=text,
+                job_id=job_id,
+                run_id=run_id,
+                intent=intent,
+                status=status,
+                workspace=workspace,
+            )
+        )
+        self._send_tasks.add(task)
+        task.add_done_callback(self._send_tasks.discard)
+
+    async def _send_log(
+        self,
+        *,
+        text: str,
+        job_id: str,
+        run_id: str | None = None,
+        intent: str | None = None,
+        status: str | None = None,
+        workspace: Path | None = None,
+    ) -> None:
+        if self.config.log_chat_id is None:
+            return
+        details = [
+            f"job_id={job_id}",
+            f"run_id={run_id or 'pending'}",
+        ]
+        if intent:
+            details.append(f"intent={intent}")
+        if status:
+            details.append(f"status={status}")
+        details.append(f"workspace={workspace or 'pending'}")
+        await self._send(
+            TelegramOutgoingMessage(
+                chat_id=self.config.log_chat_id,
+                text=f"[Лог] {text} ({'; '.join(details)})",
+                channel=TeamMessageChannel.LOG_CHAT,
+            )
+        )
 
     def _team_input(
         self,
@@ -364,7 +489,15 @@ class TelegramTeamBridge:
                 state=session.controller.state,
             )
 
-        watch_task = asyncio.create_task(self._watch_job(chat_id=chat_id, handle=handle))
+        self._schedule_log(
+            text="run_started",
+            job_id=handle.job.id,
+            intent=decision.intent.value,
+            status=TeamJobStatus.RUNNING.value,
+        )
+        watch_task = asyncio.create_task(
+            self._watch_job(chat_id=chat_id, handle=handle, intent=decision.intent.value)
+        )
         self._watch_tasks.add(watch_task)
         watch_task.add_done_callback(self._watch_tasks.discard)
         return TeamRuntimeResponse(
@@ -402,26 +535,63 @@ class TelegramTeamBridge:
         decision: TeamIntakeDecision,
     ) -> TeamRuntimeResponse:
         snapshot = await self.jobs.cancel_active(session_id, reason="stopall")
-        runtime_response = await controller.handle(team_input)
+        await controller.handle(team_input)
         if snapshot is None:
-            return runtime_response
+            return TeamRuntimeResponse(
+                user_visible_reply="Активных задач сейчас нет.",
+                decision=decision,
+                status=TeamRuntimeStatus.CANCELLED,
+                state=controller.state,
+            )
+        self._schedule_log(
+            text="run_cancelled",
+            job_id=snapshot.job_id,
+            run_id=snapshot.run_id,
+            intent=decision.intent.value,
+            status=snapshot.status.value,
+            workspace=snapshot.workspace_path,
+        )
         return self._job_response(
             decision=decision,
             snapshot=snapshot,
             state=controller.state,
-            text=f"Команда остановлена. Активная задача отменена: {snapshot.job_id}.",
+            text="Остановил активную задачу.",
         )
 
-    async def _watch_job(self, *, chat_id: int, handle: TeamJobHandle) -> None:
+    async def _watch_job(self, *, chat_id: int, handle: TeamJobHandle, intent: str) -> None:
         snapshot = await handle.wait()
         await self.drain_sends()
         if snapshot.status == TeamJobStatus.COMPLETED:
+            await self._send_log(
+                text="run_finished",
+                job_id=snapshot.job_id,
+                run_id=snapshot.run_id,
+                intent=intent,
+                status=snapshot.status.value,
+                workspace=snapshot.workspace_path,
+            )
             await self._send(
-                TelegramOutgoingMessage(chat_id=chat_id, text=snapshot.final_text or "Готово.")
+                TelegramOutgoingMessage(
+                    chat_id=chat_id,
+                    text=snapshot.final_text or "Готово.",
+                    send_typing=True,
+                )
             )
         elif snapshot.status == TeamJobStatus.FAILED:
+            await self._send_log(
+                text="run_failed",
+                job_id=snapshot.job_id,
+                run_id=snapshot.run_id,
+                intent=intent,
+                status=snapshot.status.value,
+                workspace=snapshot.workspace_path,
+            )
             await self._send(
-                TelegramOutgoingMessage(chat_id=chat_id, text=self._failed_job_text(snapshot))
+                TelegramOutgoingMessage(
+                    chat_id=chat_id,
+                    text=self._failed_job_text(snapshot),
+                    send_typing=True,
+                )
             )
 
     def _job_response(
@@ -454,16 +624,42 @@ class TelegramTeamBridge:
     def _status_text(self, snapshot: TeamJobSnapshot) -> str:
         run = snapshot.run_id or "ещё не создан"
         if snapshot.status in {TeamJobStatus.PENDING, TeamJobStatus.RUNNING}:
-            return (
-                f"Активная задача: {snapshot.job_id}. Статус: {snapshot.status.value}. Run: {run}."
-            )
+            lines = [
+                "Активная задача: есть.",
+                f"job_id: {snapshot.job_id}",
+                f"status: {snapshot.status.value}",
+                f"run_id: {run}",
+            ]
+            if snapshot.workspace_path:
+                lines.append(f"workspace: {snapshot.workspace_path}")
+            return "\n".join(lines)
         if snapshot.status == TeamJobStatus.COMPLETED:
-            return (
-                f"Активных задач нет. Последняя завершённая задача: {snapshot.job_id}. Run: {run}."
-            )
+            lines = [
+                "Активная задача: нет.",
+                f"Последняя завершённая задача: {snapshot.job_id}.",
+                f"run_id: {run}",
+            ]
+            if snapshot.workspace_path:
+                lines.append(f"workspace: {snapshot.workspace_path}")
+            return "\n".join(lines)
         if snapshot.status == TeamJobStatus.FAILED:
-            return f"Активных задач нет. Последняя failed задача: {snapshot.job_id}. Run: {run}."
-        return f"Активных задач нет. Последняя задача отменена: {snapshot.job_id}."
+            lines = [
+                "Активная задача: нет.",
+                f"Последняя failed задача: {snapshot.job_id}.",
+                f"run_id: {run}",
+            ]
+            if snapshot.workspace_path:
+                lines.append(f"workspace: {snapshot.workspace_path}")
+            if snapshot.error_message:
+                lines.append(f"error: {snapshot.error_message}")
+            return "\n".join(lines)
+        return "\n".join(
+            [
+                "Активная задача: нет.",
+                f"Последняя задача отменена: {snapshot.job_id}.",
+                f"run_id: {run}",
+            ]
+        )
 
     def _failed_job_text(self, snapshot: TeamJobSnapshot) -> str:
         lines = ["Команда завершилась с ошибкой."]
@@ -500,21 +696,53 @@ class TelegramTeamBridge:
             return self.attachment_processor.process(tuple(explicit))
 
         document = getattr(message, "document", None)
-        if document is None:
+        if document is not None:
+            upload_path = await self._download_telegram_file(
+                chat_id=chat_id,
+                file_obj=document,
+                filename=getattr(document, "file_name", None)
+                or getattr(document, "file_id", "document"),
+            )
+            return self.attachment_processor.prepare_paths([upload_path], source="telegram")
+
+        photo = self._largest_photo(message)
+        if photo is None:
             return ()
 
-        upload_path = await self._download_document(chat_id=chat_id, document=document)
+        photo_id = getattr(photo, "file_unique_id", None) or getattr(photo, "file_id", "photo")
+        upload_path = await self._download_telegram_file(
+            chat_id=chat_id,
+            file_obj=photo,
+            filename=f"photo_{photo_id}.jpg",
+        )
         return self.attachment_processor.prepare_paths([upload_path], source="telegram")
 
-    async def _download_document(self, *, chat_id: int, document: Any) -> Path:
-        filename = getattr(document, "file_name", None) or getattr(document, "file_id", "file")
+    def _largest_photo(self, message: Any) -> Any | None:
+        photo = getattr(message, "photo", None)
+        if not photo:
+            return None
+        if isinstance(photo, list | tuple):
+            return photo[-1] if photo else None
+        return photo
+
+    async def _download_telegram_file(
+        self,
+        *,
+        chat_id: int,
+        file_obj: Any,
+        filename: str,
+    ) -> Path:
+        file_size = getattr(file_obj, "file_size", None)
+        if file_size is not None:
+            self.attachment_processor._validate_size(filename, int(file_size))
+        filename = Path(filename).name or "file"
         destination_dir = self.config.uploads_root / str(chat_id)
         destination_dir.mkdir(parents=True, exist_ok=True)
         destination = destination_dir / filename
         download = getattr(self.bot, "download", None)
         if download is None:
-            raise RuntimeError("Telegram bot does not support document download")
-        result = download(document, destination=destination)
+            raise RuntimeError("Telegram bot does not support file download")
+        result = download(file_obj, destination=destination)
         if asyncio.iscoroutine(result):
             await result
         return destination
@@ -573,6 +801,72 @@ def main_job_preview(argv: list[str] | None = None) -> int:
     return asyncio.run(run_job_preview(argv))
 
 
+async def run_live_preview(argv: list[str] | None = None) -> int:
+    args = _parse_live_preview_args(argv)
+    settings = load_settings()
+    config = TelegramTeamBridgeConfig(
+        provider="fake",
+        workspace_root=args.workspace_root or settings.team_runs_dir,
+        log_chat_id=args.log_chat_id,
+        send_typing=args.send_typing,
+    )
+    bot = RecordingTelegramBot()
+    provider = _LivePreviewProvider()
+    bridge = TelegramTeamBridge(
+        bot=bot,
+        config=config,
+        provider_factory=lambda: provider,
+    )
+    printed_count = 0
+
+    with tempfile.TemporaryDirectory(prefix="astra-nexus-telegram-live-preview-") as temp_dir:
+        temp_path = Path(temp_dir)
+        file_without_caption = temp_path / "incoming-context.md"
+        file_without_caption.write_text("Контекст без подписи.", encoding="utf-8")
+        file_with_caption = temp_path / "task-brief.md"
+        file_with_caption.write_text("Контекст для задачи из файла.", encoding="utf-8")
+
+        scenarios: tuple[tuple[str, str, tuple[TeamInputAttachment, ...]], ...] = (
+            ("брат че думаешь", "брат че думаешь", ()),
+            ("сделай краткий план AI-команды", "сделай краткий план AI-команды", ()),
+            ("/status", "/status", ()),
+            ("/stopall", "/stopall", ()),
+            (
+                "file without caption",
+                "",
+                bridge.attachment_processor.prepare_paths(
+                    [file_without_caption],
+                    source="telegram_preview",
+                ),
+            ),
+            (
+                "file with caption",
+                "проверь файл и сделай краткий вывод",
+                bridge.attachment_processor.prepare_paths(
+                    [file_with_caption],
+                    source="telegram_preview",
+                ),
+            ),
+        )
+
+        for label, text, attachments in scenarios:
+            print(f"> {label}")
+            await bridge.handle_text(chat_id=args.chat_id, text=text, attachments=attachments)
+            if label == "/stopall":
+                provider.release.set()
+            await asyncio.sleep(0)
+            await bridge.drain_sends()
+            printed_count = _print_new_messages(bot.messages, printed_count)
+
+        await _wait_for_preview_job(bridge=bridge, chat_id=args.chat_id)
+        _print_new_messages(bot.messages, printed_count)
+    return 0
+
+
+def main_live_preview(argv: list[str] | None = None) -> int:
+    return asyncio.run(run_live_preview(argv))
+
+
 async def run_bot(
     argv: list[str] | None = None,
     *,
@@ -585,6 +879,14 @@ async def run_bot(
     configure_logging(settings.log_level)
     config = TelegramTeamBridgeConfig.from_settings(settings)
     token = _token_value(settings)
+
+    if args.dry_run and not token:
+        print(
+            "Astra Nexus AI Team Telegram bot dry-run: "
+            f"provider={config.provider}, workspace_root={config.workspace_root}. "
+            "Telegram token is not required for dry-run."
+        )
+        return 0
 
     if not token:
         print("Telegram bot token is not configured.")
@@ -649,6 +951,22 @@ def _parse_job_preview_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("messages", nargs="*", help="Последовательность сообщений пользователя.")
     parser.add_argument("--chat-id", type=int, default=100)
     parser.add_argument("--log-chat-id", type=int, default=None)
+    parser.add_argument(
+        "--workspace-root",
+        type=Path,
+        default=None,
+        help="Папка для team run workspaces.",
+    )
+    return parser.parse_args(argv)
+
+
+def _parse_live_preview_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Preview live Telegram AI Team runtime without Telegram API."
+    )
+    parser.add_argument("--chat-id", type=int, default=100)
+    parser.add_argument("--log-chat-id", type=int, default=200)
+    parser.add_argument("--send-typing", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument(
         "--workspace-root",
         type=Path,

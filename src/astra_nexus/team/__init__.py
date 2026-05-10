@@ -83,6 +83,7 @@ from astra_nexus.team.runtime import (
 )
 from astra_nexus.team.telegram_bridge import (
     RecordingTelegramBot,
+    TelegramChatAction,
     TelegramOutgoingMessage,
     TelegramTeamBridge,
     TelegramTeamBridgeConfig,
@@ -161,6 +162,7 @@ __all__ = [
     "TeamRunWorkspace",
     "TeamTaskBrief",
     "RecordingTelegramBot",
+    "TelegramChatAction",
     "TelegramOutgoingMessage",
     "TelegramTeamBridge",
     "TelegramTeamBridgeConfig",

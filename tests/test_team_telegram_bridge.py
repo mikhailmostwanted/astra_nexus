@@ -29,6 +29,7 @@ from astra_nexus.team.telegram_bridge import (
     TelegramTeamMessageSink,
     main_bot,
     main_job_preview,
+    main_live_preview,
     main_preview,
 )
 
@@ -173,7 +174,20 @@ def test_telegram_stopall_stops_active_runs() -> None:
 
         assert response.status == TeamRuntimeStatus.CANCELLED
         assert bridge.jobs.snapshot("100").status == TeamJobStatus.CANCELLED
-        assert "Команда остановлена" in bot.messages[-1].text
+        assert bot.messages[-1].text == "Остановил активную задачу."
+
+    asyncio.run(scenario())
+
+
+def test_telegram_stopall_without_active_job_is_human_readable() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
+
+        response = await bridge.handle_text(chat_id=100, text="/stopall")
+
+        assert response.status == TeamRuntimeStatus.CANCELLED
+        assert bot.messages[-1].text == "Активных задач сейчас нет."
 
     asyncio.run(scenario())
 
@@ -212,6 +226,7 @@ def test_telegram_failed_background_job_is_saved_as_last_failed() -> None:
 
         response = await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
         failed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
 
         assert response.status == TeamRuntimeStatus.RUNNING
         assert failed.status == TeamJobStatus.FAILED
@@ -278,6 +293,63 @@ def test_telegram_bridge_message_attachment_without_task_waits_for_instruction(t
     asyncio.run(scenario())
 
 
+def test_telegram_bridge_file_with_caption_starts_run_and_saves_attachment(tmp_path) -> None:
+    async def scenario() -> None:
+        class Chat:
+            id = 100
+
+        class Message:
+            chat = Chat()
+            text = None
+            caption = "проверь файл и сделай краткий вывод"
+
+        file_path = tmp_path / "telegram-brief.md"
+        file_path.write_text("Контент из Telegram", encoding="utf-8")
+        Message.team_attachments = TeamAttachmentProcessor().prepare_paths(
+            [file_path],
+            source="telegram_test",
+        )
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="fake",
+                workspace_root=tmp_path / "team_runs",
+            ),
+        )
+
+        response = await bridge.handle_message(Message())
+        completed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        assert response.status == TeamRuntimeStatus.RUNNING
+        assert completed.status == TeamJobStatus.COMPLETED
+        assert completed.workspace_path is not None
+        assert (completed.workspace_path / "input_files" / "telegram-brief.md").exists()
+        assert "Контент из Telegram" in (completed.workspace_path / "attachments.md").read_text(
+            encoding="utf-8"
+        )
+
+    asyncio.run(scenario())
+
+
+def test_telegram_denied_chat_gets_safe_response_and_no_job() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake", allowed_chat_ids=(200,)),
+        )
+
+        response = await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+
+        assert response is None
+        assert bridge.jobs.snapshot("100") is None
+        assert bot.messages[-1].text == "Этот чат не подключён к AI-команде."
+
+    asyncio.run(scenario())
+
+
 def test_telegram_team_message_sink_routes_main_and_log_messages() -> None:
     sink = TelegramTeamMessageSink(chat_id=100, log_chat_id=200)
     main_message = TeamMessage(
@@ -304,7 +376,7 @@ def test_telegram_team_message_sink_routes_main_and_log_messages() -> None:
     assert sink.outbox[0].chat_id == 100
     assert sink.outbox[0].text == "[Артём] Босс, принял задачу."
     assert sink.outbox[1].chat_id == 200
-    assert sink.outbox[1].text == "[Лог] agent_started"
+    assert sink.outbox[1].text == "[Лог] agent_started (event_type=agent_started)"
 
 
 def test_telegram_bridge_sends_dialogue_to_main_chat_and_events_to_log_chat() -> None:
@@ -334,6 +406,63 @@ def test_telegram_bridge_sends_dialogue_to_main_chat_and_events_to_log_chat() ->
         assert any("[Лог] Командный run начат." in text for text in log_texts)
         assert any("[Лог] Финальный сборщик подготовил ответ." in text for text in log_texts)
         assert all("Командный run начат" not in text for text in main_texts)
+
+    asyncio.run(scenario())
+
+
+def test_telegram_bridge_does_not_send_log_messages_to_main_chat_without_log_chat() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
+
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        assert all(message.channel != TeamMessageChannel.LOG_CHAT for message in bot.messages)
+        assert all("[Лог]" not in message.text for message in bot.messages)
+
+    asyncio.run(scenario())
+
+
+def test_telegram_bridge_sends_typing_before_live_messages_and_final() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake", send_typing=True),
+        )
+
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        assert bot.chat_actions
+        assert any(
+            action.chat_id == 100 and action.action == "typing" for action in bot.chat_actions
+        )
+
+    asyncio.run(scenario())
+
+
+def test_telegram_status_includes_completed_workspace_path(tmp_path) -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="fake",
+                workspace_root=tmp_path / "team_runs",
+            ),
+        )
+
+        completed = await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        snapshot = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        response = await bridge.handle_text(chat_id=100, text="/status")
+
+        assert completed.run_id == snapshot.job_id
+        assert response.run_id == snapshot.run_id
+        assert str(snapshot.workspace_path) in bot.messages[-1].text
 
     asyncio.run(scenario())
 
@@ -386,6 +515,16 @@ def test_telegram_bot_cli_creates_dispatcher_without_real_polling() -> None:
     assert dispatcher.polled is False
 
 
+def test_telegram_bot_dry_run_does_not_require_token(capsys) -> None:
+    settings = Settings(telegram_bot_token=None)
+
+    exit_code = main_bot(["--dry-run"], settings=settings)
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "dry-run" in output.lower()
+
+
 def test_telegram_preview_cli_uses_fake_provider_without_nodriver(capsys) -> None:
     exit_code = main_preview(["сделай краткий план AI-команды"])
 
@@ -405,3 +544,16 @@ def test_telegram_job_preview_cli_runs_multiple_messages(capsys) -> None:
     assert "> сделай краткий план AI-команды" in output
     assert "> /status" in output
     assert "fake:final_composer" in output
+
+
+def test_telegram_live_preview_cli_simulates_main_and_log_chats(capsys) -> None:
+    exit_code = main_live_preview([])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "> брат че думаешь" in output
+    assert "> /status" in output
+    assert "> /stopall" in output
+    assert "[Основной чат]" in output
+    assert "[Лог]" in output
+    assert "что именно с ним сделать" in output

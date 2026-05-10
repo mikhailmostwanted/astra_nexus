@@ -133,6 +133,16 @@ class Settings(BaseSettings):
             "ASTRA_TEAM_UPLOADS_DIR",
         ),
     )
+    team_telegram_downloads_dir: Path = Field(
+        default=Path("data/team_telegram_downloads"),
+        validation_alias=AliasChoices(
+            "team_telegram_downloads_dir",
+            "TEAM_TELEGRAM_DOWNLOADS_DIR",
+            "ASTRA_TEAM_TELEGRAM_DOWNLOADS_DIR",
+            "TEAM_UPLOADS_DIR",
+            "ASTRA_TEAM_UPLOADS_DIR",
+        ),
+    )
     brain_provider: str = Field(
         default="dummy",
         validation_alias=AliasChoices("brain_provider", "ASTRA_BRAIN_PROVIDER", "BRAIN_PROVIDER"),
@@ -305,6 +315,30 @@ class Settings(BaseSettings):
             "team_telegram_allowed_chat_ids",
             "TEAM_TELEGRAM_ALLOWED_CHAT_IDS",
             "ASTRA_TEAM_TELEGRAM_ALLOWED_CHAT_IDS",
+        ),
+    )
+    team_telegram_send_typing: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "team_telegram_send_typing",
+            "TEAM_TELEGRAM_SEND_TYPING",
+            "ASTRA_TEAM_TELEGRAM_SEND_TYPING",
+        ),
+    )
+    team_telegram_max_file_size_mb: int = Field(
+        default=10,
+        validation_alias=AliasChoices(
+            "team_telegram_max_file_size_mb",
+            "TEAM_TELEGRAM_MAX_FILE_SIZE_MB",
+            "ASTRA_TEAM_TELEGRAM_MAX_FILE_SIZE_MB",
+        ),
+    )
+    team_telegram_human_messages: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "team_telegram_human_messages",
+            "TEAM_TELEGRAM_HUMAN_MESSAGES",
+            "ASTRA_TEAM_TELEGRAM_HUMAN_MESSAGES",
         ),
     )
 

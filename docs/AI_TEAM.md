@@ -188,6 +188,64 @@ astra-nexus-team-dialogue-preview "проверь идею AI-команды"
 astra-nexus-team-dialogue-preview --file docs/AI_TEAM.md "проверь файл"
 ```
 
+## Telegram Live Team v1
+
+Live runtime запускается отдельной polling-командой:
+
+```bash
+astra-nexus-team-telegram-bot
+```
+
+Для проверки конфигурации без Telegram API и без токена:
+
+```bash
+astra-nexus-team-telegram-bot --dry-run
+astra-nexus-team-telegram-live-preview
+```
+
+Основные env:
+
+- `TELEGRAM_BOT_TOKEN` - токен одного Telegram-бота.
+- `TEAM_TELEGRAM_PROVIDER=fake|nodriver` - default `fake`; `NoDriverTeamProvider`
+  подключается только при явном `nodriver`.
+- `TEAM_TELEGRAM_ALLOWED_CHAT_IDS` - comma-separated allowlist chat id. Если пусто, в
+  `local/dev/test` окружении разрешены все чаты; в других окружениях чат должен быть задан.
+- `TEAM_TELEGRAM_LOG_CHAT_ID` - отдельный чат для технических run/job логов.
+- `TEAM_TELEGRAM_DOWNLOADS_DIR` - куда сохраняются скачанные Telegram файлы до workspace.
+- `TEAM_TELEGRAM_SEND_TYPING=true|false` - отправлять одиночный `typing` перед живыми
+  репликами и финалом.
+- `TEAM_TELEGRAM_MAX_FILE_SIZE_MB` - лимит одного Telegram файла.
+- `TEAM_TELEGRAM_HUMAN_MESSAGES=true|false` - включить или выключить живые реплики агентов
+  в основном чате.
+
+Поведение чатов:
+
+- основной чат получает короткое подтверждение `Принял задачу. Команда начала работу.`,
+  живые реплики агентов из dialogue/main channel и отдельное финальное сообщение;
+- log chat получает технические события `run_started`, `agent_started`, `agent_finished`,
+  `run_finished`, `run_failed`, `run_cancelled` с `job_id`, `run_id`, `intent`, `status` и
+  workspace path, если он уже известен;
+- если `TEAM_TELEGRAM_LOG_CHAT_ID` не задан, технические логи не отправляются в основной чат.
+
+Файлы:
+
+- Telegram document и photo сохраняются как input attachments;
+- `txt` и `md` читаются как UTF-8 через attachments layer;
+- `pdf`, `docx` и прочие форматы пока идут metadata-only;
+- оригинальное имя Telegram document сохраняется, файл копируется в workspace `input_files/`;
+- workspace получает `attachments.json`, `attachments.md` и `input_files/`;
+- файл без caption/текста не запускает run, бот просит уточнить задачу.
+
+Команды:
+
+- `/status` показывает активную задачу, последний завершённый/failed/cancelled job, `run_id` и
+  workspace path без длинных логов.
+- `/stopall` отменяет активный job в текущем chat/session и отвечает
+  `Остановил активную задачу.`; если активной задачи нет - `Активных задач сейчас нет.`
+
+Обычная болтовня вроде `брат че думаешь`, `привет`, `как дела` проходит через intake-router и
+не запускает team run.
+
 ## Parallel Agents Foundation v1
 
 `astra_nexus.team.execution_plan` добавляет план выполнения команды. Это foundation для

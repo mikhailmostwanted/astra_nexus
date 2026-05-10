@@ -110,6 +110,7 @@
 - Добавлен Team Dialogue v1: живой transcript агентов, `team_chat.json`/`team_chat.md` и разделение main-chat/log-chat.
 - Добавлен Parallel Agents Foundation v1: execution plan, parallel fake-provider режим, fallback на sequential для NoDriver.
 - Добавлен Team Review Protocol v1: task brief, критерии качества, review notes, revision requests, QA decision, один revision loop и final package.
+- Добавлен Telegram Live Team v1: aiogram polling runtime, allowlist чатов, файлы, `/status`, `/stopall`, main/log chat split, typing и safe fake-provider default.
 
 ---
 
@@ -141,6 +142,20 @@
 ### Критерий готовности
 
 Итерация считается готовой, если пользователь может написать задачу в Telegram, увидеть “командную работу” агентов в лог-чате и получить финальный ответ в основном чате.
+
+### Добавлено в текущем скелете
+
+- `astra-nexus-team-telegram-bot` запускает aiogram 3 polling runtime поверх
+  `TeamConversationController`, `TeamJobManager`, `TelegramTeamBridge`, attachments и
+  intake-router.
+- Default provider для Telegram runtime - `fake`; `NoDriverTeamProvider` импортируется и
+  стартует только при `TEAM_TELEGRAM_PROVIDER=nodriver`.
+- Поддержаны text/caption задачи, `/status`, `/stopall`, Telegram document/photo input
+  attachments и безопасное поведение для файла без инструкции.
+- Main chat получает человеческие реплики агентов и финал; log chat получает технические
+  run/job события только если задан `TEAM_TELEGRAM_LOG_CHAT_ID`.
+- Добавлен `astra-nexus-team-telegram-live-preview` для dry-run симуляции casual text, task,
+  status, stopall и файлов без Telegram API.
 
 ---
 
