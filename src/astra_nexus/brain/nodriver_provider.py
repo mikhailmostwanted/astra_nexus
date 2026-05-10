@@ -40,6 +40,7 @@ class NoDriverProvider(BrainProvider):
         try:
             self._log_stage("provider.ask.started", debug_context)
             content = await self.client.ask(full_prompt, debug_context=debug_context)
+            answer_metadata = getattr(self.client, "last_answer_metadata", {})
             self._log_stage("provider.ask.finished", debug_context)
         except NoDriverProviderError as exc:
             report_path = await self._write_debug_report(exc, debug_context)
@@ -89,6 +90,7 @@ class NoDriverProvider(BrainProvider):
                 "agent_id": agent_id,
                 "mode": self.settings.nodriver_agent_mode,
                 "chatgpt_url": self.settings.nodriver_chatgpt_url,
+                **(answer_metadata if isinstance(answer_metadata, dict) else {}),
             },
         )
 

@@ -46,6 +46,7 @@ astra-nexus-team-telegram-bot = "astra_nexus.team.telegram_bridge:main_bot"
 astra-nexus-team-telegram-job-preview = "astra_nexus.team.telegram_bridge:main_job_preview"
 astra-nexus-team-telegram-live-preview = "astra_nexus.team.telegram_bridge:main_live_preview"
 astra-nexus-team-telegram-preview = "astra_nexus.team.telegram_bridge:main_preview"
+astra-nexus-team-telegram-render-preview = "astra_nexus.team.telegram_render_preview:main"
 
 [project.optional-dependencies]
 dev = [

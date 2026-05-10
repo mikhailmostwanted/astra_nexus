@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 
 from astra_nexus.team import (
     FakeTeamProvider,
@@ -47,6 +48,21 @@ def test_runtime_new_task_creates_completed_run_and_workspace(tmp_path) -> None:
     assert controller.state.active_runs == {}
     assert controller.state.last_run_id == response.run_id
     assert controller.state.last_completed_run_id == response.run_id
+
+
+def test_runtime_marks_requested_output_file_intent(tmp_path) -> None:
+    controller = TeamConversationController(
+        provider=FakeTeamProvider(),
+        workspace=TeamRunWorkspace(root_path=tmp_path / "team_runs"),
+    )
+
+    response = asyncio.run(controller.handle("сделай краткий план и пришли docx"))
+
+    assert response.status == TeamRuntimeStatus.COMPLETED
+    assert response.workspace_path is not None
+    run_payload = json.loads((response.workspace_path / "run.json").read_text(encoding="utf-8"))
+    assert run_payload["runtime_metadata"]["output_requested_as_file"] is True
+    assert run_payload["runtime_metadata"]["requested_output_format"] == "docx"
 
 
 def test_runtime_status_request_reports_last_completed_run(tmp_path) -> None:

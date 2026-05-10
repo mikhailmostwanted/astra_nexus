@@ -21,7 +21,7 @@ from astra_nexus.team.fake_provider import FakeTeamProvider
 from astra_nexus.team.jobs import TeamJobStatus
 from astra_nexus.team.models import AgentProfile, AgentResult
 from astra_nexus.team.prompting import AgentPrompt
-from astra_nexus.team.provider import TeamProvider, TeamProviderError
+from astra_nexus.team.provider import TeamProvider, TeamProviderError, TeamProviderOutput
 from astra_nexus.team.telegram_bridge import (
     RecordingTelegramBot,
     TelegramTeamBridge,
@@ -89,6 +89,35 @@ class TracebackLikeFailingProvider(TeamProvider):
         raise TeamProviderError(
             "Traceback (most recent call last):\nFile secret.py\ncontrolled low-level failure",
             agent_id=profile.profile_id,
+        )
+
+
+class StructuredFinalProvider(FakeTeamProvider):
+    async def generate(
+        self,
+        *,
+        profile: AgentProfile,
+        user_task: str,
+        previous_results: Sequence[AgentResult],
+        prompt: AgentPrompt | None = None,
+    ) -> str | TeamProviderOutput:
+        if profile.role != AgentRole.FINAL_COMPOSER:
+            return await super().generate(
+                profile=profile,
+                user_task=user_task,
+                previous_results=previous_results,
+                prompt=prompt,
+            )
+        return TeamProviderOutput(
+            content="Заголовок\n\nПервый пункт\nВторой пункт",
+            metadata={
+                "structured_answer": {
+                    "format": "html",
+                    "source": "test",
+                    "html": "<h2>Заголовок</h2><ul><li>Первый пункт</li><li>Второй пункт</li></ul>",
+                    "sourceLinks": [],
+                }
+            },
         )
 
 
@@ -211,11 +240,100 @@ def test_telegram_preview_task_starts_background_job() -> None:
         assert bridge.registry.get(100).state.last_completed_run_id == completed.run_id
         assert any("сделай краткий план AI-команды" in message.text for message in bot.messages)
         assert all("fake:final_composer" not in message.text for message in bot.messages)
-        assert any("Файлы результата сохранены" in message.text for message in bot.messages)
-        assert {document.filename for document in bot.documents} >= {
-            "final_answer.md",
-            "index.md",
-        }
+        assert all("Файлы результата сохранены" not in message.text for message in bot.messages)
+        assert bot.documents == []
+
+    asyncio.run(scenario())
+
+
+def test_telegram_completed_job_sends_formatted_html_final_answer(tmp_path) -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="fake",
+                workspace_root=tmp_path / "team_runs",
+                atmosphere_mode="minimal",
+            ),
+            provider_factory=StructuredFinalProvider,
+        )
+
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        final_messages = [message for message in bot.messages if "<b>Заголовок</b>" in message.text]
+        assert final_messages
+        assert final_messages[-1].parse_mode == "HTML"
+        assert "• Первый пункт" in final_messages[-1].text
+
+    asyncio.run(scenario())
+
+
+def test_telegram_completed_job_logs_artifact_summary_without_main_chat_files(
+    tmp_path,
+) -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="fake",
+                workspace_root=tmp_path / "team_runs",
+                atmosphere_mode="minimal",
+                log_chat_id=200,
+            ),
+        )
+
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        main_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.MAIN_CHAT
+        ]
+        log_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.LOG_CHAT
+        ]
+        assert all("Файлы результата сохранены" not in text for text in main_texts)
+        assert all("final_answer.md" not in text for text in main_texts)
+        assert any("artifacts_saved" in text for text in log_texts)
+        assert bot.documents == []
+
+    asyncio.run(scenario())
+
+
+def test_telegram_requested_file_sends_only_requested_artifact(tmp_path) -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="fake",
+                workspace_root=tmp_path / "team_runs",
+                atmosphere_mode="minimal",
+            ),
+        )
+
+        await bridge.handle_text(
+            chat_id=100,
+            text="сделай краткий план AI-команды и пришли файлом",
+        )
+        await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+        await bridge.drain_watchers()
+
+        main_texts = [
+            message.text
+            for message in bot.messages
+            if message.channel == TeamMessageChannel.MAIN_CHAT
+        ]
+        assert "Готово, собрал файл. Проверь, всё лежит внутри." in main_texts
+        assert [document.filename for document in bot.documents] == ["requested_output.txt"]
 
     asyncio.run(scenario())
 

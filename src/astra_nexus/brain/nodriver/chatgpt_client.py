@@ -157,6 +157,7 @@ class ResponseWaitResult:
     final_idle_detected: bool
     detected_model: str | None = None
     detected_reasoning_mode: str | None = None
+    structured_answer: dict[str, Any] = field(default_factory=dict)
 
     @property
     def debug_payload(self) -> dict[str, Any]:
@@ -170,6 +171,7 @@ class ResponseWaitResult:
             "final_idle_detected": self.final_idle_detected,
             "detected_model": self.detected_model,
             "detected_reasoning_mode": self.detected_reasoning_mode,
+            "structured_answer": self.structured_answer,
         }
 
 
@@ -177,6 +179,7 @@ class ChatGPTClient:
     def __init__(self, settings: Settings, session: BrowserSession | None = None) -> None:
         self.settings = settings
         self.session = session or BrowserSession(settings)
+        self.last_answer_metadata: dict[str, Any] = {}
 
     async def ask(
         self,
@@ -264,6 +267,11 @@ class ChatGPTClient:
 
         self._log_stage("chatgpt.response.parse.started", debug_context)
         response = wait_result.final_answer
+        self.last_answer_metadata = {
+            "structured_answer": wait_result.structured_answer,
+            "detected_model": wait_result.detected_model,
+            "detected_reasoning_mode": wait_result.detected_reasoning_mode,
+        }
         if not response.strip():
             try:
                 response = parse_last_assistant_response(wait_result.assistant_segments)
@@ -1121,6 +1129,10 @@ class ChatGPTClient:
                         await record(ResponseWaitState.WAITING_FOR_FINAL_IDLE, snapshot)
                     if now - idle_started_at >= idle_confirm_seconds:
                         await record(ResponseWaitState.FINAL_RESPONSE_READY, snapshot)
+                        final_turn = self._final_answer_turn(
+                            current_assistant_turns,
+                            fallback_text=segments[-1],
+                        )
                         result = ResponseWaitResult(
                             final_answer=segments[-1],
                             assistant_segments=segments,
@@ -1131,6 +1143,10 @@ class ChatGPTClient:
                             final_idle_detected=True,
                             detected_model=snapshot.detected_model,
                             detected_reasoning_mode=snapshot.detected_reasoning_mode,
+                            structured_answer=_structured_answer_from_turn(
+                                final_turn,
+                                fallback_text=segments[-1],
+                            ),
                         )
                         self._write_response_wait_debug(
                             debug_context,
@@ -1321,6 +1337,21 @@ class ChatGPTClient:
             return turns[-1]
         return snapshot.latest_assistant_turn
 
+    def _final_answer_turn(
+        self,
+        turns: list[dict[str, Any]],
+        *,
+        fallback_text: str,
+    ) -> dict[str, Any]:
+        fallback_normalized = _normalize_answer_for_match(fallback_text)
+        for turn in reversed(turns):
+            text = str(turn.get("finalText") or turn.get("text") or "")
+            if not text.strip() or _is_thinking_label_only(text):
+                continue
+            if not fallback_normalized or _normalize_answer_for_match(text) == fallback_normalized:
+                return turn
+        return turns[-1] if turns else {}
+
     def _response_wait_state(
         self,
         snapshot: ResponseWaitSnapshot,
@@ -1461,6 +1492,10 @@ class ChatGPTClient:
             "final_candidate_previews": _turn_list(latest_turn, "finalCandidatePreviews"),
             "thought_candidate_previews": _turn_list(latest_turn, "thoughtCandidatePreviews"),
             "rejected_candidate_reasons": _turn_list(latest_turn, "rejectedCandidateReasons"),
+            "structured_answer": _structured_answer_from_turn(
+                latest_turn,
+                fallback_text=segments[-1] if segments else "",
+            ),
             "current_assistant_turns": [
                 _compact_turn_debug(turn) for turn in current_turns[-5:] if isinstance(turn, dict)
             ],
@@ -2006,6 +2041,37 @@ def _turn_list(turn: dict[str, Any], key: str) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
+def _structured_answer_from_turn(
+    turn: dict[str, Any],
+    *,
+    fallback_text: str,
+) -> dict[str, Any]:
+    if isinstance(turn, dict):
+        structured = turn.get("structuredAnswer")
+        if isinstance(structured, dict):
+            payload = dict(structured)
+            payload.setdefault("text", fallback_text)
+            payload.setdefault("format", "html")
+            source_links = payload.get("sourceLinks")
+            payload["sourceLinks"] = (
+                [item for item in source_links if isinstance(item, dict)]
+                if isinstance(source_links, list)
+                else []
+            )
+            return payload
+    return {
+        "format": "plain_text",
+        "source": "fallback_text",
+        "text": fallback_text,
+        "html": "",
+        "sourceLinks": [],
+    }
+
+
+def _normalize_answer_for_match(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
 def _compact_turn_debug(turn: dict[str, Any]) -> dict[str, Any]:
     return {
         "index": turn.get("index"),
@@ -2025,6 +2091,10 @@ def _compact_turn_debug(turn: dict[str, Any]) -> dict[str, Any]:
         "has_thinking_reasoning_blocks": bool(turn.get("hasThinkingReasoningBlocks")),
         "has_hidden_aria_hidden_elements": bool(turn.get("hasHiddenAriaHiddenElements")),
         "selected_final_candidate": turn.get("selectedFinalCandidate"),
+        "structured_answer": _structured_answer_from_turn(
+            turn,
+            fallback_text=str(turn.get("finalText") or turn.get("text") or ""),
+        ),
         "final_candidate_previews": _turn_list(turn, "finalCandidatePreviews"),
         "thought_candidate_previews": _turn_list(turn, "thoughtCandidatePreviews"),
         "rejected_candidate_reasons": _turn_list(turn, "rejectedCandidateReasons"),

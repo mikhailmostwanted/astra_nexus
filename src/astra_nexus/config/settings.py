@@ -591,6 +591,22 @@ class Settings(BaseSettings):
             "ASTRA_TEAM_TELEGRAM_HUMAN_MESSAGES",
         ),
     )
+    team_telegram_send_internal_artifacts: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "team_telegram_send_internal_artifacts",
+            "TEAM_TELEGRAM_SEND_INTERNAL_ARTIFACTS",
+            "ASTRA_TEAM_TELEGRAM_SEND_INTERNAL_ARTIFACTS",
+        ),
+    )
+    team_telegram_send_requested_files: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "team_telegram_send_requested_files",
+            "TEAM_TELEGRAM_SEND_REQUESTED_FILES",
+            "ASTRA_TEAM_TELEGRAM_SEND_REQUESTED_FILES",
+        ),
+    )
     team_atmosphere_mode: str = Field(
         default="template",
         validation_alias=AliasChoices(

@@ -222,6 +222,10 @@ astra-nexus-team-telegram-live-preview
 - `TEAM_TELEGRAM_MAX_FILE_SIZE_MB` - лимит одного Telegram файла.
 - `TEAM_TELEGRAM_HUMAN_MESSAGES=true|false` - включить или выключить живые реплики агентов
   в основном чате.
+- `TEAM_TELEGRAM_SEND_INTERNAL_ARTIFACTS=false|true` - отправлять ли внутренние artifacts
+  (`final_answer.md`, `index.md` и служебные отчёты) в основной чат. Default `false`.
+- `TEAM_TELEGRAM_SEND_REQUESTED_FILES=true|false` - отправлять пользовательский output-файл,
+  если пользователь явно попросил результат файлом. Default `true`.
 - `TEAM_ATMOSPHERE_MODE=template|minimal|result_snippet|off` - режим main-chat UX.
   Для `TEAM_TELEGRAM_PROVIDER=nodriver` default `template` автоматически становится
   `minimal`, чтобы основной чат не выглядел как демо с заготовленными фразами.
@@ -245,7 +249,7 @@ astra-nexus-team-telegram-live-preview
 - в `template` основной чат получает старые humanized реплики atmosphere layer. Этот режим
   удобен для fake provider/demo.
 - в `minimal` основной чат получает только `Принял задачу. Команда начала работу.`, редкие
-  служебные сообщения, финальный ответ и файлы результата.
+  служебные сообщения и финальный ответ.
 - в `result_snippet` агентские сообщения строятся из реальных `AgentResult`, не из
   шаблонов; если результата ещё нет, реплика не отправляется.
 - в `off` agent chatter в основной чат не отправляется.
@@ -253,6 +257,18 @@ astra-nexus-team-telegram-live-preview
   `run_finished`, `run_failed`, `run_cancelled` с `job_id`, `run_id`, `session_id`,
   `intent`, `provider`, `execution_mode`, `workspace` и `status`;
 - если `TEAM_TELEGRAM_LOG_CHAT_ID` не задан, технические логи не отправляются в основной чат.
+
+Финальная доставка:
+
+- основной Telegram chat получает финальный ответ как текст с сохранённым форматированием
+  ChatGPT Web: абзацы, списки, заголовки, жирный/курсив, ссылки и code blocks передаются
+  через Telegram HTML;
+- длинный финальный ответ режется на несколько Telegram-сообщений по блокам, без отправки
+  ответа файлом вместо текста;
+- внутренние artifacts сохраняются в workspace, но не отправляются пользователю по умолчанию;
+- technical artifact summary с путями workspace/artifacts может уходить в `log_chat`;
+- пользовательский файл отправляется только по явной просьбе вроде `пришли файлом`,
+  `сделай docx`, `собери документ`, `сделай pdf`.
 
 Файлы:
 
@@ -699,6 +715,17 @@ Provider mode:
   bridge принимает все чаты.
 - Для migrated supergroup указывай новый id формата `-100...`; bridge ретраит
   отправку после `TelegramMigrateToChat` один раз и обновляет runtime chat id.
+
+Финальный ответ в основном чате отправляется как Telegram HTML, собранный из rendered
+ChatGPT DOM/HTML. Bridge не переформулирует текст и не добавляет смысловые заголовки:
+он только переносит существующую структуру ответа в Telegram-safe теги и режет длинный
+ответ на безопасные chunks.
+
+Internal artifacts (`final_answer.md`, `index.md`, protocol/report files) продолжают
+сохраняться в workspace, но при `TEAM_TELEGRAM_SEND_INTERNAL_ARTIFACTS=false` не уходят
+в основной чат. Если задан `TEAM_TELEGRAM_LOG_CHAT_ID`, log chat получает technical
+artifact summary с путями. Requested output files отправляются отдельно только когда
+router выставил `output_requested_as_file=true` и `TEAM_TELEGRAM_SEND_REQUESTED_FILES=true`.
 
 Preview без реального Telegram и без NoDriver:
 

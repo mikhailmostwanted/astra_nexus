@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from enum import StrEnum
+from typing import Any
 
 from astra_nexus.team.models import AgentProfile, AgentResult
 from astra_nexus.team.prompting import AgentPrompt
@@ -35,6 +37,22 @@ class TeamProviderError(RuntimeError):
         return self.error_kind == TeamErrorKind.TRANSIENT_PROVIDER
 
 
+@dataclass(frozen=True)
+class TeamProviderOutput:
+    content: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __str__(self) -> str:
+        return self.content
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            return self.content == other
+        if isinstance(other, TeamProviderOutput):
+            return self.content == other.content and self.metadata == other.metadata
+        return NotImplemented
+
+
 class TeamProvider(ABC):
     name: str
     supports_parallel: bool = False
@@ -47,5 +65,5 @@ class TeamProvider(ABC):
         user_task: str,
         previous_results: Sequence[AgentResult],
         prompt: AgentPrompt | None = None,
-    ) -> str:
+    ) -> str | TeamProviderOutput:
         raise NotImplementedError

@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from astra_nexus.team.attachments import TeamInputAttachment
 from astra_nexus.team.dialogue import (
@@ -41,7 +42,12 @@ from astra_nexus.team.models import (
 )
 from astra_nexus.team.profiles import DEFAULT_AGENT_PIPELINE, default_profiles_by_role
 from astra_nexus.team.prompting import AgentContext, AgentPrompt, TeamPromptBuilder
-from astra_nexus.team.provider import TeamErrorKind, TeamProvider, TeamProviderError
+from astra_nexus.team.provider import (
+    TeamErrorKind,
+    TeamProvider,
+    TeamProviderError,
+    TeamProviderOutput,
+)
 from astra_nexus.team.review_protocol import (
     build_final_package,
     build_quality_criteria,
@@ -464,12 +470,13 @@ class AsyncTeamOrchestrator:
                 raise provider_error from exc
 
             try:
-                content = await self._generate_with_timeout(
+                provider_output = await self._generate_with_timeout(
                     profile=profile,
                     user_task=team_run.user_task,
                     previous_results=previous_results,
                     prompt=prompt,
                 )
+                content, provider_metadata = self._normalize_provider_output(provider_output)
                 break
             except Exception as exc:
                 provider_error = self._provider_error(exc, profile=profile)
@@ -511,6 +518,7 @@ class AsyncTeamOrchestrator:
                 "execution_step_id": execution_step_id,
                 "execution_mode": execution_mode.value,
                 "dependencies": [role.value for role in dependencies],
+                "provider_response": provider_metadata,
             },
         )
         team_run.results.append(result)
@@ -591,7 +599,7 @@ class AsyncTeamOrchestrator:
         user_task: str,
         previous_results: Sequence[AgentResult],
         prompt: AgentPrompt,
-    ) -> str:
+    ) -> str | TeamProviderOutput:
         generate = self.provider.generate(
             profile=profile,
             user_task=user_task,
@@ -602,6 +610,16 @@ class AsyncTeamOrchestrator:
         if timeout is not None and timeout > 0:
             return await asyncio.wait_for(generate, timeout=timeout)
         return await generate
+
+    def _normalize_provider_output(
+        self,
+        output: str | TeamProviderOutput | Any,
+    ) -> tuple[str, dict[str, Any]]:
+        if isinstance(output, TeamProviderOutput):
+            return output.content, dict(output.metadata)
+        content = getattr(output, "content", output)
+        metadata = getattr(output, "metadata", {})
+        return str(content), dict(metadata) if isinstance(metadata, dict) else {}
 
     def _provider_error(self, exc: Exception, *, profile: AgentProfile) -> TeamProviderError:
         if isinstance(exc, TeamProviderError):

@@ -92,6 +92,34 @@ def test_failed_run_does_not_create_false_completed_final_artifact(tmp_path) -> 
     assert run_payload["artifacts_count"] == 0
 
 
+def test_requested_output_artifact_is_separate_from_internal_final_answer(tmp_path) -> None:
+    outcome = asyncio.run(
+        AsyncTeamOrchestrator(provider=FakeTeamProvider()).run(
+            "сделай краткий план и пришли файлом"
+        )
+    )
+    outcome.run.runtime_metadata.update(
+        {
+            "output_requested_as_file": True,
+            "requested_output_format": "txt",
+        }
+    )
+    workspace = TeamRunWorkspace(root_path=tmp_path / "team_runs")
+
+    run_path = workspace.save(outcome.run)
+
+    artifacts_dir = run_path / "artifacts"
+    assert (artifacts_dir / "requested_output.txt").exists()
+    assert (artifacts_dir / "final_answer.md").exists()
+    run_payload = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
+    requested = [
+        artifact
+        for artifact in run_payload["artifacts"]
+        if artifact["artifact_type"] == "requested_output"
+    ]
+    assert requested[0]["path"].endswith("requested_output.txt")
+
+
 def test_artifact_generation_does_not_import_nodriver(tmp_path) -> None:
     sys.modules.pop("astra_nexus.team.nodriver_provider", None)
     outcome = asyncio.run(AsyncTeamOrchestrator(provider=FakeTeamProvider()).run("собери итог"))

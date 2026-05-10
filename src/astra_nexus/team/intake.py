@@ -30,6 +30,9 @@ class TeamInputIntent(StrEnum):
     UNKNOWN = "unknown"
 
 
+REQUESTED_OUTPUT_FORMATS = {"md", "docx", "pdf", "txt", "unknown"}
+
+
 @dataclass(frozen=True)
 class TeamInput:
     text: str = ""
@@ -39,15 +42,78 @@ class TeamInput:
     last_run_id: str | None = None
     failed_run_id: str | None = None
     has_active_run: bool = False
+    output_requested_as_file: bool = False
+    requested_output_format: str = "unknown"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.attachments and self.attachments_count == 0:
             object.__setattr__(self, "attachments_count", len(self.attachments))
+        requested, output_format = detect_requested_output_artifact(self.text)
+        effective_requested = self.output_requested_as_file or requested
+        if requested and not self.output_requested_as_file:
+            object.__setattr__(self, "output_requested_as_file", True)
+        normalized_format = _normalize_requested_output_format(
+            self.requested_output_format if self.output_requested_as_file else output_format
+        )
+        if effective_requested and normalized_format == "unknown" and output_format != "unknown":
+            normalized_format = output_format
+        object.__setattr__(self, "requested_output_format", normalized_format)
 
     @property
     def normalized_text(self) -> str:
         return " ".join(self.text.strip().lower().split())
+
+
+def detect_requested_output_artifact(text: str) -> tuple[bool, str]:
+    normalized = " ".join(str(text or "").strip().lower().split())
+    if not normalized:
+        return False, "unknown"
+    output_format = "unknown"
+    if any(token in normalized for token in ("docx", ".docx", "ворд", "word")):
+        output_format = "docx"
+    elif any(token in normalized for token in ("pdf", ".pdf", "пдф")):
+        output_format = "pdf"
+    elif any(token in normalized for token in ("txt", ".txt", "текстовым файлом")):
+        output_format = "txt"
+    elif any(token in normalized for token in ("md", ".md", "markdown", "маркдаун")):
+        output_format = "md"
+
+    file_markers = (
+        "пришли файлом",
+        "отправь файлом",
+        "выдай файлом",
+        "сделай файл",
+        "собери файл",
+        "собери документ",
+        "сделай документ",
+        "документом",
+        "в виде файла",
+        "как файл",
+    )
+    format_markers = (
+        "сделай docx",
+        "сделай pdf",
+        "сделай txt",
+        "сделай md",
+        "собери docx",
+        "собери pdf",
+        "собери txt",
+        "собери md",
+        "пришли docx",
+        "пришли pdf",
+        "пришли txt",
+        "пришли md",
+    )
+    requested = any(marker in normalized for marker in file_markers + format_markers)
+    if not requested and output_format in {"docx", "pdf"}:
+        requested = any(verb in normalized for verb in ("сделай", "собери", "подготовь"))
+    return requested, output_format
+
+
+def _normalize_requested_output_format(value: str) -> str:
+    normalized = str(value or "unknown").strip().lower().lstrip(".")
+    return normalized if normalized in REQUESTED_OUTPUT_FORMATS else "unknown"
 
 
 @dataclass(frozen=True)

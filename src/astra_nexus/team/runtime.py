@@ -180,7 +180,7 @@ class TeamConversationController:
             self.state.active_runs.pop(active.run_id, None)
             active.run_id = failed_run.id
             self._register_started(active)
-            self._apply_run_metadata(failed_run, team_input.metadata)
+            self._apply_run_metadata(failed_run, self._run_metadata_from_input(team_input))
             workspace_path = self._save(failed_run)
             self._register_failed(failed_run, workspace_path=workspace_path)
             self.runs.append(failed_run)
@@ -197,7 +197,7 @@ class TeamConversationController:
         self.state.active_runs.pop(active.run_id, None)
         active.run_id = outcome.run.id
         self._register_started(active)
-        self._apply_run_metadata(outcome.run, team_input.metadata)
+        self._apply_run_metadata(outcome.run, self._run_metadata_from_input(team_input))
         workspace_path = self._save(outcome.run)
         self._register_completed(outcome.run, workspace_path=workspace_path)
         self.runs.append(outcome.run)
@@ -318,6 +318,13 @@ class TeamConversationController:
         if isinstance(incoming, TeamInput):
             return incoming
         return TeamInput(text=incoming, **metadata)
+
+    def _run_metadata_from_input(self, team_input: TeamInput) -> dict[str, Any]:
+        return {
+            **team_input.metadata,
+            "output_requested_as_file": team_input.output_requested_as_file,
+            "requested_output_format": team_input.requested_output_format,
+        }
 
     def _orchestrator(self) -> AsyncTeamOrchestrator:
         if self.orchestrator_factory is not None:

@@ -10,7 +10,12 @@ from astra_nexus.brain.nodriver_provider import NoDriverProvider
 from astra_nexus.config.settings import Settings
 from astra_nexus.team.models import AgentProfile, AgentResult
 from astra_nexus.team.prompting import AgentPrompt
-from astra_nexus.team.provider import TeamErrorKind, TeamProvider, TeamProviderError
+from astra_nexus.team.provider import (
+    TeamErrorKind,
+    TeamProvider,
+    TeamProviderError,
+    TeamProviderOutput,
+)
 
 TRANSIENT_NODRIVER_ERROR_CODES = {
     "response_timeout",
@@ -47,7 +52,7 @@ class NoDriverTeamProvider(TeamProvider):
         user_task: str,
         previous_results: Sequence[AgentResult],
         prompt: AgentPrompt | None = None,
-    ) -> str:
+    ) -> str | TeamProviderOutput:
         full_prompt = self.build_full_prompt(
             profile=profile,
             user_task=user_task,
@@ -66,7 +71,10 @@ class NoDriverTeamProvider(TeamProvider):
                 ),
             )
             resolved = await response if inspect.isawaitable(response) else response
-            return self._content(resolved)
+            return TeamProviderOutput(
+                content=self._content(resolved),
+                metadata=self._metadata(resolved),
+            )
         except NoDriverProviderError as exc:
             raise TeamProviderError(
                 str(exc),
@@ -143,6 +151,15 @@ class NoDriverTeamProvider(TeamProvider):
     def _content(self, response: BrainResponse | Any) -> str:
         content = getattr(response, "content", response)
         return str(content)
+
+    def _metadata(self, response: BrainResponse | Any) -> dict[str, Any]:
+        metadata = getattr(response, "metadata", {})
+        if not isinstance(metadata, dict):
+            return {}
+        return {
+            "brain_provider": getattr(response, "provider", ""),
+            **metadata,
+        }
 
     def _previous_results_text(self, previous_results: Sequence[AgentResult]) -> str:
         if not previous_results:

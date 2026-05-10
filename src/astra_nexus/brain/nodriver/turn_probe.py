@@ -215,6 +215,44 @@ TURN_DUMP_PROBE_SCRIPT = r"""
     return role === 'button' || role === 'menu' || role === 'menuitem';
   }
 
+  function sourceChipLabel(text) {
+    const normalized = normalizeText(text).replace(/\s+/g, ' ');
+    return /^[^\n]{1,60}\s+\+\s+\d+$/.test(normalized) || /^\+\s*\d+$/.test(normalized);
+  }
+
+  function isSourceChipNode(node) {
+    if (!node || !node.getAttribute) return false;
+    const tag = (node.tagName || '').toLowerCase();
+    const haystack = [
+      classNameOf(node),
+      attr(node, 'data-testid'),
+      attr(node, 'aria-label'),
+      attr(node, 'role'),
+    ].join(' ').toLowerCase();
+    const sourceChipPattern =
+      /(^|\s|[-_])(source-chip|sourcechip|citation|cite|reference|attribution|web-source)(\s|[-_]|$)/;
+    if (sourceChipPattern.test(haystack)) {
+      return true;
+    }
+    const label = node.innerText || node.textContent || '';
+    if ((tag === 'a' || tag === 'span') && sourceChipLabel(label)) {
+      return true;
+    }
+    return false;
+  }
+
+  function sourceChipAncestor(node, boundary) {
+    let current = node && (node.nodeType === Node.TEXT_NODE ? node.parentElement : node);
+    while (current && current !== boundary.parentElement) {
+      if (current.nodeType === Node.ELEMENT_NODE && isSourceChipNode(current)) {
+        return current;
+      }
+      if (current === boundary) break;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
   function isThoughtNode(node) {
     if (!node || !node.getAttribute) return false;
     const haystack = [
@@ -251,6 +289,9 @@ TURN_DUMP_PROBE_SCRIPT = r"""
       }
       if (isThoughtNode(current)) {
         return 'thought_or_reasoning';
+      }
+      if (sourceChipAncestor(current, boundary)) {
+        return 'source_chip';
       }
       if (isControlNode(current)) {
         return 'control_node';
@@ -309,6 +350,46 @@ TURN_DUMP_PROBE_SCRIPT = r"""
       .filter(Boolean);
   }
 
+  function collectSourceLinks(root) {
+    const sourceNodes = queryWithinIncludingSelf(root, 'a, [href]').filter((node) =>
+      isSourceChipNode(node)
+    );
+    const seen = new Set();
+    return sourceNodes
+      .map((node) => {
+        const href = attr(node, 'href');
+        if (!href || seen.has(href)) return null;
+        seen.add(href);
+        return {
+          href,
+          label: compactPreview(node.innerText || node.textContent || href, 120),
+        };
+      })
+      .filter(Boolean);
+  }
+
+  function sanitizedAnswerHtml(root, node) {
+    if (!node) return '';
+    const clone = node.cloneNode(true);
+    const removable = [];
+    const walker = document.createTreeWalker(clone, NodeFilter.SHOW_ELEMENT);
+    while (walker.nextNode()) {
+      const current = walker.currentNode;
+      if (
+        isControlNode(current) ||
+        isThoughtNode(current) ||
+        isSourceChipNode(current) ||
+        hiddenByAttributeOrStyle(current)
+      ) {
+        removable.push(current);
+      }
+    }
+    for (const current of removable) {
+      if (current && current.parentNode) current.parentNode.removeChild(current);
+    }
+    return clone.outerHTML || clone.innerHTML || '';
+  }
+
   function addFinalCandidate(root, node, source, accepted, rejected, seenText) {
     const selector = describeNode(node);
     if (!node) {
@@ -351,6 +432,8 @@ TURN_DUMP_PROBE_SCRIPT = r"""
       source,
       selector,
       text,
+      html: sanitizedAnswerHtml(root, node),
+      sourceLinks: collectSourceLinks(node),
       textLength: text.length,
       textPreview: compactPreview(text),
     });
@@ -518,6 +601,16 @@ TURN_DUMP_PROBE_SCRIPT = r"""
             selector: chosen.selector,
             textLength: chosen.textLength,
             textPreview: chosen.textPreview,
+          }
+        : null,
+      structuredAnswer: chosen
+        ? {
+            format: 'html',
+            source: chosen.source,
+            selector: chosen.selector,
+            text: chosen.text,
+            html: chosen.html,
+            sourceLinks: chosen.sourceLinks || [],
           }
         : null,
     };

@@ -74,7 +74,7 @@ from astra_nexus.team.profiles import (
     default_profiles_by_role,
 )
 from astra_nexus.team.prompting import AgentContext, AgentPrompt, TeamPromptBuilder
-from astra_nexus.team.provider import TeamProvider, TeamProviderError
+from astra_nexus.team.provider import TeamProvider, TeamProviderError, TeamProviderOutput
 from astra_nexus.team.review_protocol import (
     TeamFinalPackage,
     TeamQualityCriterion,
@@ -167,6 +167,7 @@ __all__ = [
     "TeamJobStatus",
     "TeamProvider",
     "TeamProviderError",
+    "TeamProviderOutput",
     "TeamPromptBuilder",
     "TeamRetryPolicy",
     "TeamFinalPackage",

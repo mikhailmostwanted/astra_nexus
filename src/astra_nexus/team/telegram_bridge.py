@@ -40,6 +40,15 @@ from astra_nexus.team.runtime import (
     TeamRuntimeResponse,
     TeamRuntimeStatus,
 )
+from astra_nexus.team.telegram_render import (
+    TELEGRAM_HTML_PARSE_MODE,
+    TELEGRAM_INTERNAL_CHUNK_LIMIT,
+    TelegramRenderedChunk,
+    render_answer_for_telegram,
+    split_plain_text,
+    split_telegram_html_blocks,
+    strip_telegram_html,
+)
 from astra_nexus.team.workspace import TeamRunWorkspace
 from astra_nexus.utils.logging import configure_logging
 
@@ -68,6 +77,8 @@ class TelegramTeamBridgeConfig:
     atmosphere: AtmosphereProfile = field(default_factory=AtmosphereProfile)
     atmosphere_mode: str = "template"
     atmosphere_snippet_max_chars: int = 220
+    send_internal_artifacts: bool = False
+    send_requested_files: bool = True
 
     @classmethod
     def from_settings(cls, settings: Settings) -> TelegramTeamBridgeConfig:
@@ -94,6 +105,8 @@ class TelegramTeamBridgeConfig:
             atmosphere=AtmosphereProfile.from_settings(settings),
             atmosphere_mode=atmosphere_mode,
             atmosphere_snippet_max_chars=settings.team_atmosphere_snippet_max_chars,
+            send_internal_artifacts=settings.team_telegram_send_internal_artifacts,
+            send_requested_files=settings.team_telegram_send_requested_files,
         )
 
 
@@ -103,6 +116,7 @@ class TelegramOutgoingMessage:
     text: str
     channel: TeamMessageChannel = TeamMessageChannel.MAIN_CHAT
     send_typing: bool = False
+    parse_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -131,6 +145,7 @@ class RecordingTelegramBot:
             text=text,
             channel=kwargs.get("channel", TeamMessageChannel.MAIN_CHAT),
             send_typing=kwargs.get("send_typing", False),
+            parse_mode=kwargs.get("parse_mode"),
         )
         self.messages.append(message)
         return message
@@ -526,6 +541,18 @@ class TelegramTeamBridge:
 
     async def _send(self, message: TelegramOutgoingMessage) -> None:
         message = replace(message, chat_id=self._resolve_migrated_chat_id(message.chat_id))
+        chunks = self._telegram_message_chunks(message)
+        for index, chunk in enumerate(chunks):
+            await self._send_one(
+                replace(
+                    message,
+                    text=chunk.text,
+                    parse_mode=chunk.parse_mode,
+                    send_typing=message.send_typing and index == 0,
+                )
+            )
+
+    async def _send_one(self, message: TelegramOutgoingMessage) -> None:
         if message.send_typing and self.config.send_typing:
             await self._send_typing(message.chat_id)
         if message.channel == TeamMessageChannel.MAIN_CHAT and self.config.atmosphere.send_delays:
@@ -541,15 +568,49 @@ class TelegramTeamBridge:
                 text=message.text,
                 channel=message.channel,
                 send_typing=message.send_typing,
+                parse_mode=message.parse_mode,
             )
             return
-        await self._send_with_migration_retry(
-            chat_id=message.chat_id,
-            operation="send_message",
-            sender=lambda target_chat_id: self.bot.send_message(
-                chat_id=target_chat_id,
-                text=message.text,
-            ),
+        try:
+            await self._send_with_migration_retry(
+                chat_id=message.chat_id,
+                operation="send_message",
+                sender=lambda target_chat_id: self.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=message.text,
+                    parse_mode=message.parse_mode,
+                ),
+            )
+        except Exception:
+            if message.parse_mode != TELEGRAM_HTML_PARSE_MODE:
+                raise
+            fallback = strip_telegram_html(message.text)
+            logger.warning("Telegram HTML send failed; falling back to plain text", exc_info=True)
+            await self._send_with_migration_retry(
+                chat_id=message.chat_id,
+                operation="send_message",
+                sender=lambda target_chat_id: self.bot.send_message(
+                    chat_id=target_chat_id,
+                    text=fallback,
+                ),
+            )
+
+    def _telegram_message_chunks(
+        self,
+        message: TelegramOutgoingMessage,
+    ) -> tuple[TelegramRenderedChunk, ...]:
+        if message.parse_mode == TELEGRAM_HTML_PARSE_MODE:
+            chunks = split_telegram_html_blocks(
+                message.text.split("\n\n"),
+                chunk_limit=TELEGRAM_INTERNAL_CHUNK_LIMIT,
+            )
+            return tuple(
+                TelegramRenderedChunk(text=chunk, parse_mode=TELEGRAM_HTML_PARSE_MODE)
+                for chunk in chunks
+            )
+        chunks = split_plain_text(message.text, chunk_limit=TELEGRAM_INTERNAL_CHUNK_LIMIT)
+        return tuple(
+            TelegramRenderedChunk(text=chunk, parse_mode=message.parse_mode) for chunk in chunks
         )
 
     async def _send_document(
@@ -1100,15 +1161,20 @@ class TelegramTeamBridge:
             )
             if self.config.atmosphere_mode == "result_snippet":
                 await self._send_result_snippets(chat_id=chat_id, snapshot=snapshot)
-            final_text = self._completed_final_text(snapshot)
-            await self._send(
-                TelegramOutgoingMessage(
-                    chat_id=chat_id,
-                    text=final_text,
-                    send_typing=True,
-                )
-            )
-            await self._send_completed_artifacts(chat_id=chat_id, snapshot=snapshot)
+            if self._output_requested_as_file(snapshot):
+                await self._send_completed_artifacts(chat_id=chat_id, snapshot=snapshot)
+            else:
+                final_render = self._completed_final_render(snapshot)
+                for chunk in final_render.chunks:
+                    await self._send(
+                        TelegramOutgoingMessage(
+                            chat_id=chat_id,
+                            text=chunk.text,
+                            send_typing=True,
+                            parse_mode=chunk.parse_mode,
+                        )
+                    )
+                await self._send_completed_artifacts(chat_id=chat_id, snapshot=snapshot)
         elif snapshot.status == TeamJobStatus.FAILED:
             technical_error = self._technical_error_text(snapshot)
             await self._send_log(
@@ -1299,6 +1365,39 @@ class TelegramTeamBridge:
             return artifact_final
         return "Команда завершилась, но финальный ответ пуст. Детали отправлены в log chat."
 
+    def _completed_final_render(self, snapshot: TeamJobSnapshot):
+        final_text = self._completed_final_text(snapshot)
+        structured_answer = self._workspace_final_structured_answer(snapshot.workspace_path)
+        return render_answer_for_telegram(final_text, structured_answer=structured_answer)
+
+    def _workspace_final_structured_answer(self, workspace_path: Path | None) -> dict[str, Any]:
+        for result in reversed(self._workspace_results_payload(workspace_path)):
+            if result.get("role") != AgentRole.FINAL_COMPOSER.value:
+                continue
+            metadata = result.get("metadata")
+            if not isinstance(metadata, dict):
+                return {}
+            provider_response = metadata.get("provider_response")
+            if not isinstance(provider_response, dict):
+                return {}
+            structured = provider_response.get("structured_answer")
+            return structured if isinstance(structured, dict) else {}
+        return {}
+
+    def _output_requested_as_file(self, snapshot: TeamJobSnapshot) -> bool:
+        payload = self._workspace_run_payload(snapshot.workspace_path)
+        metadata = payload.get("runtime_metadata") if payload else None
+        if not isinstance(metadata, dict):
+            return False
+        return bool(metadata.get("output_requested_as_file"))
+
+    def _requested_output_format(self, snapshot: TeamJobSnapshot) -> str:
+        payload = self._workspace_run_payload(snapshot.workspace_path)
+        metadata = payload.get("runtime_metadata") if payload else None
+        if not isinstance(metadata, dict):
+            return "unknown"
+        return str(metadata.get("requested_output_format") or "unknown")
+
     def _registry_status_text(self, entry: TeamRunRegistryEntry) -> str:
         lines = [
             "Активная задача: нет.",
@@ -1416,6 +1515,32 @@ class TelegramTeamBridge:
         if not artifacts_count or artifacts_dir is None:
             return
 
+        await self._send_artifact_log_summary(
+            snapshot=snapshot,
+            artifacts_count=artifacts_count,
+            artifacts_dir=artifacts_dir,
+            primary_artifact_path=primary_artifact_path,
+        )
+
+        if self._output_requested_as_file(snapshot):
+            if not self.config.send_requested_files:
+                return
+            requested_path = self._requested_artifact_path(payload)
+            if requested_path is None:
+                return
+            await self._send(
+                TelegramOutgoingMessage(
+                    chat_id=chat_id,
+                    text="Готово, собрал файл. Проверь, всё лежит внутри.",
+                    send_typing=True,
+                )
+            )
+            await self._send_document(chat_id=chat_id, path=requested_path)
+            return
+
+        if not self.config.send_internal_artifacts:
+            return
+
         lines = [
             f"Файлы результата сохранены: {artifacts_dir}",
             f"artifacts: {artifacts_count}",
@@ -1433,6 +1558,45 @@ class TelegramTeamBridge:
         for path in (primary_artifact_path, artifacts_index_path):
             if path is not None:
                 await self._send_document(chat_id=chat_id, path=path)
+
+    async def _send_artifact_log_summary(
+        self,
+        *,
+        snapshot: TeamJobSnapshot,
+        artifacts_count: int,
+        artifacts_dir: Path,
+        primary_artifact_path: Path | None,
+    ) -> None:
+        if self.config.log_chat_id is None:
+            return
+        details = [
+            f"job_id={snapshot.job_id}",
+            f"run_id={snapshot.run_id or 'pending'}",
+            f"session_id={snapshot.session_id}",
+            f"artifacts={artifacts_count}",
+            f"artifacts_dir={artifacts_dir}",
+        ]
+        if primary_artifact_path is not None:
+            details.append(f"primary_artifact={primary_artifact_path}")
+        await self._send(
+            TelegramOutgoingMessage(
+                chat_id=self.config.log_chat_id,
+                text=f"[Лог] artifacts_saved ({'; '.join(details)})",
+                channel=TeamMessageChannel.LOG_CHAT,
+            )
+        )
+
+    def _requested_artifact_path(self, payload: dict[str, Any]) -> Path | None:
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, list):
+            return None
+        for artifact in artifacts:
+            if not isinstance(artifact, dict):
+                continue
+            if artifact.get("artifact_type") != "requested_output":
+                continue
+            return _path_or_none(artifact.get("path"))
+        return None
 
     def _workspace_run_payload(self, workspace_path: Path | None) -> dict[str, Any]:
         payload = self._workspace_json(workspace_path, "run.json")

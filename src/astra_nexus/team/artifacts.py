@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +15,7 @@ from astra_nexus.team.review_protocol import review_protocol_markdown
 
 
 class TeamArtifactType(StrEnum):
+    REQUESTED_OUTPUT = "requested_output"
     FINAL_ANSWER = "final_answer"
     EXECUTIVE_SUMMARY = "executive_summary"
     CRITIC_REPORT = "critic_report"
@@ -27,6 +30,8 @@ class TeamArtifactFormat(StrEnum):
     MARKDOWN = "markdown"
     JSON = "json"
     TEXT = "text"
+    DOCX = "docx"
+    PDF = "pdf"
 
 
 @dataclass
@@ -49,6 +54,11 @@ def generate_output_artifacts(run: TeamRun, *, run_path: Path) -> list[TeamArtif
     artifacts_dir = run_path / "artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[TeamArtifact] = []
+    requested_artifact = _requested_output_artifact(
+        run, artifacts_dir=artifacts_dir, run_path=run_path
+    )
+    if requested_artifact is not None:
+        artifacts.append(requested_artifact)
 
     artifacts.append(
         _write_markdown_artifact(
@@ -185,6 +195,13 @@ def artifacts_index(artifacts: list[TeamArtifact]) -> TeamArtifact | None:
     return None
 
 
+def requested_output_artifact(artifacts: list[TeamArtifact]) -> TeamArtifact | None:
+    for artifact in artifacts:
+        if artifact.artifact_type == TeamArtifactType.REQUESTED_OUTPUT:
+            return artifact
+    return None
+
+
 def source_files_summary_markdown(attachments: list[TeamInputAttachment]) -> str:
     sections = ["# Сводка исходных файлов", ""]
     if not attachments:
@@ -234,6 +251,78 @@ def _write_markdown_artifact(
         relative_path=_relative_path(path, run_path),
         primary=primary,
         size_bytes=path.stat().st_size,
+    )
+
+
+def _requested_output_artifact(
+    run: TeamRun,
+    *,
+    artifacts_dir: Path,
+    run_path: Path,
+) -> TeamArtifact | None:
+    metadata = run.runtime_metadata
+    if not metadata.get("output_requested_as_file"):
+        return None
+    output_format = str(metadata.get("requested_output_format") or "unknown").lower()
+    if output_format not in {"md", "docx", "pdf", "txt"}:
+        output_format = "txt"
+    text = _plain_text_for_file(run.final_text or "")
+    if output_format == "docx":
+        return _write_docx_artifact(artifacts_dir=artifacts_dir, run_path=run_path, text=text)
+    if output_format == "pdf":
+        return _write_pdf_artifact(artifacts_dir=artifacts_dir, run_path=run_path, text=text)
+    if output_format == "md":
+        return _write_markdown_artifact(
+            artifacts_dir=artifacts_dir,
+            run_path=run_path,
+            artifact_type=TeamArtifactType.REQUESTED_OUTPUT,
+            filename="requested_output.md",
+            title="Запрошенный файл",
+            content=run.final_text or "",
+        )
+    path = artifacts_dir / "requested_output.txt"
+    path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    return TeamArtifact(
+        artifact_type=TeamArtifactType.REQUESTED_OUTPUT,
+        format=TeamArtifactFormat.TEXT,
+        title="Запрошенный файл",
+        path=path,
+        relative_path=_relative_path(path, run_path),
+        size_bytes=path.stat().st_size,
+        metadata={"requested_output": True, "requested_output_format": "txt"},
+    )
+
+
+def _write_docx_artifact(*, artifacts_dir: Path, run_path: Path, text: str) -> TeamArtifact:
+    from docx import Document
+
+    path = artifacts_dir / "requested_output.docx"
+    document = Document()
+    for block in text.split("\n\n"):
+        document.add_paragraph(block.strip())
+    document.save(path)
+    return TeamArtifact(
+        artifact_type=TeamArtifactType.REQUESTED_OUTPUT,
+        format=TeamArtifactFormat.DOCX,
+        title="Запрошенный файл",
+        path=path,
+        relative_path=_relative_path(path, run_path),
+        size_bytes=path.stat().st_size,
+        metadata={"requested_output": True, "requested_output_format": "docx"},
+    )
+
+
+def _write_pdf_artifact(*, artifacts_dir: Path, run_path: Path, text: str) -> TeamArtifact:
+    path = artifacts_dir / "requested_output.pdf"
+    _write_simple_pdf(path, text)
+    return TeamArtifact(
+        artifact_type=TeamArtifactType.REQUESTED_OUTPUT,
+        format=TeamArtifactFormat.PDF,
+        title="Запрошенный файл",
+        path=path,
+        relative_path=_relative_path(path, run_path),
+        size_bytes=path.stat().st_size,
+        metadata={"requested_output": True, "requested_output_format": "pdf"},
     )
 
 
@@ -381,6 +470,112 @@ def _run_manifest_payload(
         ],
         "artifacts": [artifact_payload(artifact) for artifact in artifacts],
     }
+
+
+def _plain_text_for_file(value: str) -> str:
+    text = str(value or "")
+    if "<" in text and ">" in text:
+        parser = _HTMLTextExtractor()
+        try:
+            parser.feed(text)
+            extracted = parser.text()
+            if extracted:
+                return extracted
+        except Exception:
+            return text
+    return text
+
+
+class _HTMLTextExtractor(HTMLParser):
+    block_tags = {"p", "div", "section", "article", "li", "blockquote", "pre"}
+    heading_tags = {"h1", "h2", "h3", "h4", "h5", "h6"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self.block_tags or tag in self.heading_tags:
+            self._break()
+        if tag == "li":
+            self.parts.append("- ")
+        if tag == "br":
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in self.block_tags or tag in self.heading_tags:
+            self._break()
+
+    def handle_data(self, data: str) -> None:
+        if data:
+            self.parts.append(data)
+
+    def text(self) -> str:
+        text = "".join(self.parts).replace("\r\n", "\n")
+        lines = [" ".join(line.split()) for line in text.splitlines()]
+        return "\n".join(lines).strip()
+
+    def _break(self) -> None:
+        current = "".join(self.parts)
+        if current and not current.endswith("\n\n"):
+            self.parts.append("\n\n")
+
+
+def _write_simple_pdf(path: Path, text: str) -> None:
+    lines = []
+    for paragraph in text.splitlines() or [""]:
+        wrapped = textwrap.wrap(paragraph, width=88) or [""]
+        lines.extend(wrapped)
+    lines = lines[:700]
+    content_lines = ["BT", "/F1 10 Tf", "50 780 Td", "14 TL"]
+    for index, line in enumerate(lines):
+        if index:
+            content_lines.append("T*")
+        content_lines.append(f"({_escape_pdf_text(line)}) Tj")
+    content_lines.append("ET")
+    stream = "\n".join(content_lines).encode("utf-8")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length "
+        + str(len(stream)).encode("ascii")
+        + b" >>\nstream\n"
+        + stream
+        + b"\nendstream",
+    ]
+    output = bytearray(b"%PDF-1.4\n")
+    offsets = [0]
+    for number, payload in enumerate(objects, start=1):
+        offsets.append(len(output))
+        output.extend(f"{number} 0 obj\n".encode("ascii"))
+        output.extend(payload)
+        output.extend(b"\nendobj\n")
+    xref_offset = len(output)
+    output.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    output.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    output.extend(
+        (
+            f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    path.write_bytes(bytes(output))
+
+
+def _escape_pdf_text(value: str) -> str:
+    return (
+        value.encode("latin-1", errors="replace")
+        .decode("latin-1")
+        .replace("\\", "\\\\")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+    )
 
 
 def _result_for_role(run: TeamRun, role: AgentRole) -> str | None:
