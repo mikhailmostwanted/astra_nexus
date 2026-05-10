@@ -291,6 +291,54 @@ TELEGRAM_BOT_TOKEN=... astra-nexus-team-telegram-bot
 - Telegram session registry пока in-memory;
 - NoDriver lifecycle/start/clean не меняется.
 
+## Telegram Team Jobs v1
+
+Долгий team pipeline не должен выполняться внутри Telegram handler синхронно: иначе bot
+не сможет отвечать на `/status`, `/stopall` и другие сообщения, пока агенты ждут provider.
+Для этого добавлен `astra_nexus.team.jobs`.
+
+Основные сущности:
+
+- `TeamJob` - один background запуск команды для Telegram/session.
+- `TeamJobStatus` - `pending`, `running`, `completed`, `failed`, `cancelled`.
+- `TeamJobManager` - создаёт `asyncio.Task`, хранит active/last jobs и запрещает второй
+  active job в том же чате.
+- `TeamJobHandle` - handle для ожидания/cancel конкретной job.
+- `TeamJobSnapshot` - короткий status view: job id, run id, workspace path, final text,
+  error message и timestamps.
+
+Поведение Telegram bridge:
+
+- обычный `casual_chat`, `empty_input` и `unknown` не создают background job;
+- новая задача создаёт `TeamJob` и сразу отвечает в основной чат:
+  `Принял задачу. Команда начала работу.`;
+- агентские `TeamMessage` продолжают уходить через Telegram sink по мере выполнения;
+- `/status` во время active job показывает job id, статус и run id, если run уже создан;
+- `/stopall` отменяет active job и сообщает, что команда остановлена;
+- если job completed, bridge отправляет финальный ответ;
+- если job failed, bridge отправляет понятное сообщение с run id, workspace path и resume
+  hint, когда эти данные доступны;
+- если в чате уже есть active job, новая задача не стартует: нужно дождаться результата
+  или вызвать `/stopall`.
+
+Preview нескольких сообщений без реального Telegram:
+
+```bash
+astra-nexus-team-telegram-job-preview \
+  "сделай краткий план AI-команды" \
+  "/status" \
+  "/stopall"
+```
+
+Ограничения jobs v1:
+
+- это фоновые Telegram jobs, а не параллельные агенты внутри pipeline;
+- NoDriver lifecycle/start/clean не меняется;
+- cancel best-effort: job получает `Task.cancel()`, но отдельный browser lifecycle не
+  переписывается;
+- registry остаётся in-memory;
+- полноценной файловой обработки нет.
+
 ## Retry policy
 
 AI Team pipeline выполняет агентов последовательно, но каждый агентский шаг может быть

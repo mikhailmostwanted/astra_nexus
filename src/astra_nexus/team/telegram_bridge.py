@@ -10,9 +10,21 @@ from typing import Any
 
 from astra_nexus.config.settings import Settings, load_settings
 from astra_nexus.team.fake_provider import FakeTeamProvider
+from astra_nexus.team.intake import TeamInput, TeamInputIntent, TeamIntakeDecision
+from astra_nexus.team.jobs import (
+    TeamJobAlreadyActiveError,
+    TeamJobHandle,
+    TeamJobManager,
+    TeamJobSnapshot,
+    TeamJobStatus,
+)
 from astra_nexus.team.messages import TeamMessage, TeamMessageChannel, TeamMessageSink
 from astra_nexus.team.provider import TeamProvider
-from astra_nexus.team.runtime import TeamConversationController, TeamRuntimeResponse
+from astra_nexus.team.runtime import (
+    TeamConversationController,
+    TeamRuntimeResponse,
+    TeamRuntimeStatus,
+)
 from astra_nexus.team.workspace import TeamRunWorkspace
 from astra_nexus.utils.logging import configure_logging
 
@@ -63,17 +75,20 @@ class TelegramTeamMessageSink(TeamMessageSink):
         self.chat_id = chat_id
         self.log_chat_id = log_chat_id
         self.outbox: list[TelegramOutgoingMessage] = []
+        self.auto_sender: Callable[[TelegramOutgoingMessage], None] | None = None
 
     def publish(self, message: TeamMessage) -> None:
         if message.channel == TeamMessageChannel.DEBUG and self.log_chat_id is None:
             return
-        self.outbox.append(
-            TelegramOutgoingMessage(
-                chat_id=self._target_chat_id(message.channel),
-                text=self.render(message),
-                channel=message.channel,
-            )
+        outgoing = TelegramOutgoingMessage(
+            chat_id=self._target_chat_id(message.channel),
+            text=self.render(message),
+            channel=message.channel,
         )
+        if self.auto_sender is not None:
+            self.auto_sender(outgoing)
+            return
+        self.outbox.append(outgoing)
 
     def render(self, message: TeamMessage) -> str:
         if message.channel == TeamMessageChannel.LOG_CHAT:
@@ -145,6 +160,7 @@ class TelegramTeamBridge:
         config: TelegramTeamBridgeConfig | None = None,
         provider_factory: ProviderFactory | None = None,
         registry: TelegramTeamSessionRegistry | None = None,
+        jobs: TeamJobManager | None = None,
     ) -> None:
         self.bot = bot
         self.config = config or TelegramTeamBridgeConfig()
@@ -153,6 +169,9 @@ class TelegramTeamBridge:
             config=self.config,
             provider_factory=self.provider_factory,
         )
+        self.jobs = jobs or TeamJobManager()
+        self._send_tasks: set[asyncio.Task[None]] = set()
+        self._watch_tasks: set[asyncio.Task[None]] = set()
 
     async def handle_message(self, message: Any) -> TeamRuntimeResponse | None:
         chat_id = int(message.chat.id)
@@ -180,17 +199,54 @@ class TelegramTeamBridge:
             )
             return None
 
-        session = self.registry.session(chat_id)
-        session.sink.clear()
+        session = self._session(chat_id)
         controller = session.controller
-        response = await controller.handle(
-            text,
+        team_input = self._team_input(
+            controller=controller,
+            text=text,
             attachments_count=attachments_count,
-            active_run_id=next(iter(controller.state.active_runs), None),
-            last_run_id=controller.state.last_run_id,
-            failed_run_id=controller.state.last_failed_run_id,
-            has_active_run=bool(controller.state.active_runs),
         )
+        decision = controller.router.route(team_input)
+        session_id = self._session_id(chat_id)
+
+        if decision.intent == TeamInputIntent.STATUS_REQUEST:
+            response = await self._handle_status(
+                session_id=session_id,
+                controller=controller,
+                team_input=team_input,
+                decision=decision,
+            )
+            await self._send(
+                TelegramOutgoingMessage(chat_id=chat_id, text=response.user_visible_reply)
+            )
+            return response
+
+        if decision.intent == TeamInputIntent.STOP_ALL:
+            response = await self._handle_stopall(
+                session_id=session_id,
+                controller=controller,
+                team_input=team_input,
+                decision=decision,
+            )
+            await self._send(
+                TelegramOutgoingMessage(chat_id=chat_id, text=response.user_visible_reply)
+            )
+            return response
+
+        if self._should_start_job(decision):
+            response = self._start_background_job(
+                chat_id=chat_id,
+                session_id=session_id,
+                session=session,
+                team_input=team_input,
+                decision=decision,
+            )
+            await self._send(
+                TelegramOutgoingMessage(chat_id=chat_id, text=response.user_visible_reply)
+            )
+            return response
+
+        response = await controller.handle(team_input)
 
         outgoing_messages = session.sink.pop_outbox()
         outgoing_messages.append(
@@ -199,6 +255,18 @@ class TelegramTeamBridge:
         for outgoing in outgoing_messages:
             await self._send(outgoing)
         return response
+
+    async def drain_sends(self) -> None:
+        while self._send_tasks:
+            tasks = tuple(self._send_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._send_tasks.difference_update(tasks)
+
+    async def drain_watchers(self) -> None:
+        while self._watch_tasks:
+            tasks = tuple(self._watch_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self._watch_tasks.difference_update(tasks)
 
     async def _send(self, message: TelegramOutgoingMessage) -> None:
         if isinstance(self.bot, RecordingTelegramBot):
@@ -212,6 +280,184 @@ class TelegramTeamBridge:
 
     def _chat_allowed(self, chat_id: int) -> bool:
         return not self.config.allowed_chat_ids or chat_id in self.config.allowed_chat_ids
+
+    def _session(self, chat_id: int) -> TelegramTeamSession:
+        session = self.registry.session(chat_id)
+        session.sink.auto_sender = self._schedule_send
+        return session
+
+    def _schedule_send(self, message: TelegramOutgoingMessage) -> None:
+        task = asyncio.create_task(self._send(message))
+        self._send_tasks.add(task)
+        task.add_done_callback(self._send_tasks.discard)
+
+    def _team_input(
+        self,
+        *,
+        controller: TeamConversationController,
+        text: str,
+        attachments_count: int,
+    ) -> TeamInput:
+        return TeamInput(
+            text=text,
+            attachments_count=attachments_count,
+            active_run_id=next(iter(controller.state.active_runs), None),
+            last_run_id=controller.state.last_run_id,
+            failed_run_id=controller.state.last_failed_run_id,
+            has_active_run=bool(controller.state.active_runs),
+        )
+
+    def _should_start_job(self, decision: TeamIntakeDecision) -> bool:
+        if decision.intent == TeamInputIntent.FILE_TASK and not decision.should_start_run:
+            return False
+        return decision.intent in {
+            TeamInputIntent.NEW_TASK,
+            TeamInputIntent.FILE_TASK,
+            TeamInputIntent.TASK_FOLLOWUP,
+            TeamInputIntent.REVISE_PREVIOUS_RESULT,
+        }
+
+    def _start_background_job(
+        self,
+        *,
+        chat_id: int,
+        session_id: str,
+        session: TelegramTeamSession,
+        team_input: TeamInput,
+        decision: TeamIntakeDecision,
+    ) -> TeamRuntimeResponse:
+        try:
+            handle = self.jobs.start(
+                session_id=session_id,
+                user_task=team_input.text.strip(),
+                runner=lambda: session.controller.handle(team_input),
+            )
+        except TeamJobAlreadyActiveError as exc:
+            return TeamRuntimeResponse(
+                user_visible_reply=(
+                    "В этом чате задача уже выполняется. Дождись результата или вызови /stopall."
+                ),
+                decision=decision,
+                status=TeamRuntimeStatus.RUNNING,
+                run_id=exc.job_id,
+                state=session.controller.state,
+            )
+
+        watch_task = asyncio.create_task(self._watch_job(chat_id=chat_id, handle=handle))
+        self._watch_tasks.add(watch_task)
+        watch_task.add_done_callback(self._watch_tasks.discard)
+        return TeamRuntimeResponse(
+            user_visible_reply="Принял задачу. Команда начала работу.",
+            decision=decision,
+            status=TeamRuntimeStatus.RUNNING,
+            run_id=handle.job.id,
+            state=session.controller.state,
+        )
+
+    async def _handle_status(
+        self,
+        *,
+        session_id: str,
+        controller: TeamConversationController,
+        team_input: TeamInput,
+        decision: TeamIntakeDecision,
+    ) -> TeamRuntimeResponse:
+        snapshot = self.jobs.snapshot(session_id)
+        if snapshot is not None:
+            return self._job_response(
+                decision=decision,
+                snapshot=snapshot,
+                state=controller.state,
+                text=self._status_text(snapshot),
+            )
+        return await controller.handle(team_input)
+
+    async def _handle_stopall(
+        self,
+        *,
+        session_id: str,
+        controller: TeamConversationController,
+        team_input: TeamInput,
+        decision: TeamIntakeDecision,
+    ) -> TeamRuntimeResponse:
+        snapshot = await self.jobs.cancel_active(session_id, reason="stopall")
+        runtime_response = await controller.handle(team_input)
+        if snapshot is None:
+            return runtime_response
+        return self._job_response(
+            decision=decision,
+            snapshot=snapshot,
+            state=controller.state,
+            text=f"Команда остановлена. Активная задача отменена: {snapshot.job_id}.",
+        )
+
+    async def _watch_job(self, *, chat_id: int, handle: TeamJobHandle) -> None:
+        snapshot = await handle.wait()
+        await self.drain_sends()
+        if snapshot.status == TeamJobStatus.COMPLETED:
+            await self._send(
+                TelegramOutgoingMessage(chat_id=chat_id, text=snapshot.final_text or "Готово.")
+            )
+        elif snapshot.status == TeamJobStatus.FAILED:
+            await self._send(
+                TelegramOutgoingMessage(chat_id=chat_id, text=self._failed_job_text(snapshot))
+            )
+
+    def _job_response(
+        self,
+        *,
+        decision: TeamIntakeDecision,
+        snapshot: TeamJobSnapshot,
+        state: Any,
+        text: str,
+    ) -> TeamRuntimeResponse:
+        return TeamRuntimeResponse(
+            user_visible_reply=text,
+            decision=decision,
+            status=self._runtime_status(snapshot.status),
+            run_id=snapshot.run_id or snapshot.job_id,
+            final_text=snapshot.final_text,
+            workspace_path=snapshot.workspace_path,
+            state=state,
+        )
+
+    def _runtime_status(self, status: TeamJobStatus) -> TeamRuntimeStatus:
+        if status in {TeamJobStatus.PENDING, TeamJobStatus.RUNNING}:
+            return TeamRuntimeStatus.RUNNING
+        if status == TeamJobStatus.COMPLETED:
+            return TeamRuntimeStatus.COMPLETED
+        if status == TeamJobStatus.FAILED:
+            return TeamRuntimeStatus.FAILED
+        return TeamRuntimeStatus.CANCELLED
+
+    def _status_text(self, snapshot: TeamJobSnapshot) -> str:
+        run = snapshot.run_id or "ещё не создан"
+        if snapshot.status in {TeamJobStatus.PENDING, TeamJobStatus.RUNNING}:
+            return (
+                f"Активная задача: {snapshot.job_id}. Статус: {snapshot.status.value}. Run: {run}."
+            )
+        if snapshot.status == TeamJobStatus.COMPLETED:
+            return (
+                f"Активных задач нет. Последняя завершённая задача: {snapshot.job_id}. Run: {run}."
+            )
+        if snapshot.status == TeamJobStatus.FAILED:
+            return f"Активных задач нет. Последняя failed задача: {snapshot.job_id}. Run: {run}."
+        return f"Активных задач нет. Последняя задача отменена: {snapshot.job_id}."
+
+    def _failed_job_text(self, snapshot: TeamJobSnapshot) -> str:
+        lines = ["Команда завершилась с ошибкой."]
+        if snapshot.run_id:
+            lines.append(f"run_id: {snapshot.run_id}")
+        if snapshot.workspace_path:
+            lines.append(f"workspace: {snapshot.workspace_path}")
+        if snapshot.error_message:
+            lines.append(f"message: {snapshot.error_message}")
+        if snapshot.run_id:
+            lines.append(f"Можно продолжить: astra-nexus-team-resume {snapshot.run_id}")
+        return "\n".join(lines)
+
+    def _session_id(self, chat_id: int) -> str:
+        return str(chat_id)
 
     def _response_text(self, response: TeamRuntimeResponse) -> str:
         lines = [response.user_visible_reply]
@@ -235,6 +481,7 @@ async def run_preview(argv: list[str] | None = None) -> int:
     bot = RecordingTelegramBot()
     bridge = TelegramTeamBridge(bot=bot, config=config)
     await bridge.handle_text(chat_id=args.chat_id, text=message)
+    await _wait_for_preview_job(bridge=bridge, chat_id=args.chat_id)
 
     for outgoing in bot.messages:
         label = "Лог" if outgoing.channel == TeamMessageChannel.LOG_CHAT else "Основной чат"
@@ -244,6 +491,35 @@ async def run_preview(argv: list[str] | None = None) -> int:
 
 def main_preview(argv: list[str] | None = None) -> int:
     return asyncio.run(run_preview(argv))
+
+
+async def run_job_preview(argv: list[str] | None = None) -> int:
+    args = _parse_job_preview_args(argv)
+    messages = args.messages or [DEFAULT_TELEGRAM_PREVIEW_MESSAGE]
+    settings = load_settings()
+    config = TelegramTeamBridgeConfig(
+        provider="fake",
+        workspace_root=args.workspace_root or settings.team_runs_dir,
+        log_chat_id=args.log_chat_id,
+    )
+    bot = RecordingTelegramBot()
+    bridge = TelegramTeamBridge(bot=bot, config=config)
+    printed_count = 0
+
+    for message in messages:
+        print(f"> {message}")
+        await bridge.handle_text(chat_id=args.chat_id, text=message)
+        await asyncio.sleep(0)
+        await bridge.drain_sends()
+        printed_count = _print_new_messages(bot.messages, printed_count)
+
+    await _wait_for_preview_job(bridge=bridge, chat_id=args.chat_id)
+    _print_new_messages(bot.messages, printed_count)
+    return 0
+
+
+def main_job_preview(argv: list[str] | None = None) -> int:
+    return asyncio.run(run_job_preview(argv))
 
 
 async def run_bot(
@@ -304,6 +580,22 @@ def _parse_preview_args(argv: list[str] | None) -> argparse.Namespace:
         description="Preview Telegram AI Team bridge without Telegram."
     )
     parser.add_argument("message", nargs="*", help="Сообщение пользователя.")
+    parser.add_argument("--chat-id", type=int, default=100)
+    parser.add_argument("--log-chat-id", type=int, default=None)
+    parser.add_argument(
+        "--workspace-root",
+        type=Path,
+        default=None,
+        help="Папка для team run workspaces.",
+    )
+    return parser.parse_args(argv)
+
+
+def _parse_job_preview_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Preview Telegram AI Team background job flow without Telegram."
+    )
+    parser.add_argument("messages", nargs="*", help="Последовательность сообщений пользователя.")
     parser.add_argument("--chat-id", type=int, default=100)
     parser.add_argument("--log-chat-id", type=int, default=None)
     parser.add_argument(
@@ -413,6 +705,22 @@ def _attachments_count(message: Any) -> int:
         else:
             count += 1
     return count
+
+
+async def _wait_for_preview_job(*, bridge: TelegramTeamBridge, chat_id: int) -> None:
+    session_id = bridge._session_id(chat_id)
+    if bridge.jobs.active(session_id) is not None:
+        await bridge.jobs.wait(session_id)
+    await bridge.drain_watchers()
+    await asyncio.sleep(0)
+    await bridge.drain_sends()
+
+
+def _print_new_messages(messages: list[TelegramOutgoingMessage], printed_count: int) -> int:
+    for outgoing in messages[printed_count:]:
+        label = "Лог" if outgoing.channel == TeamMessageChannel.LOG_CHAT else "Основной чат"
+        print(f"[{label}] {outgoing.text}")
+    return len(messages)
 
 
 if __name__ == "__main__":

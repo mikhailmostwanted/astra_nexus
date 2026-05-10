@@ -3,27 +3,74 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sys
+from collections.abc import Sequence
 
 from pydantic import SecretStr
 
 from astra_nexus.config.settings import Settings
 from astra_nexus.team import (
     AgentRole,
-    TeamActiveRun,
     TeamMessage,
     TeamMessageChannel,
     TeamMessageType,
     TeamRuntimeStatus,
 )
 from astra_nexus.team import telegram_bridge as telegram_bridge_module
+from astra_nexus.team.fake_provider import FakeTeamProvider
+from astra_nexus.team.jobs import TeamJobStatus
+from astra_nexus.team.models import AgentProfile, AgentResult
+from astra_nexus.team.prompting import AgentPrompt
+from astra_nexus.team.provider import TeamProvider, TeamProviderError
 from astra_nexus.team.telegram_bridge import (
     RecordingTelegramBot,
     TelegramTeamBridge,
     TelegramTeamBridgeConfig,
     TelegramTeamMessageSink,
     main_bot,
+    main_job_preview,
     main_preview,
 )
+
+
+class PausingTeamProvider(FakeTeamProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self._paused = False
+
+    async def generate(
+        self,
+        *,
+        profile: AgentProfile,
+        user_task: str,
+        previous_results: Sequence[AgentResult],
+        prompt: AgentPrompt | None = None,
+    ) -> str:
+        if profile.role == AgentRole.COORDINATOR and not self._paused:
+            self._paused = True
+            self.started.set()
+            await self.release.wait()
+        return await super().generate(
+            profile=profile,
+            user_task=user_task,
+            previous_results=previous_results,
+            prompt=prompt,
+        )
+
+
+class FailingTeamProvider(TeamProvider):
+    name = "failing_test"
+
+    async def generate(
+        self,
+        *,
+        profile: AgentProfile,
+        user_task: str,
+        previous_results: Sequence[AgentResult],
+        prompt: AgentPrompt | None = None,
+    ) -> str:
+        raise TeamProviderError("controlled failure", agent_id=profile.profile_id)
 
 
 def test_telegram_preview_casual_does_not_create_run() -> None:
@@ -38,42 +85,138 @@ def test_telegram_preview_casual_does_not_create_run() -> None:
     assert bot.messages[-1].text == "Понял, это обычный диалог, команду не запускаю."
 
 
-def test_telegram_preview_task_creates_completed_run() -> None:
-    bot = RecordingTelegramBot()
-    bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
+def test_telegram_preview_task_starts_background_job() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        provider = PausingTeamProvider()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake"),
+            provider_factory=lambda: provider,
+        )
 
-    response = asyncio.run(bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды"))
+        response = await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(provider.started.wait(), timeout=1)
 
-    assert response.status == TeamRuntimeStatus.COMPLETED
-    assert response.run_id is not None
-    assert bridge.registry.get(100).state.last_completed_run_id == response.run_id
-    assert any("fake:final_composer" in message.text for message in bot.messages)
+        assert response.status == TeamRuntimeStatus.RUNNING
+        assert response.run_id is not None
+        assert bridge.jobs.snapshot("100").status == TeamJobStatus.RUNNING
+        assert any(
+            message.text == "Принял задачу. Команда начала работу." for message in bot.messages
+        )
+
+        provider.release.set()
+        completed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+
+        assert completed.status == TeamJobStatus.COMPLETED
+        assert bridge.registry.get(100).state.last_completed_run_id == completed.run_id
+        assert any("fake:final_composer" in message.text for message in bot.messages)
+
+    asyncio.run(scenario())
 
 
 def test_telegram_status_returns_runtime_status() -> None:
-    bot = RecordingTelegramBot()
-    bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
-    first = asyncio.run(bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды"))
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
+        first = await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        completed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
 
-    response = asyncio.run(bridge.handle_text(chat_id=100, text="/status"))
+        response = await bridge.handle_text(chat_id=100, text="/status")
 
-    assert response.decision.intent.value == "status_request"
-    assert first.run_id in bot.messages[-1].text
-    assert "Последний завершённый run" in bot.messages[-1].text
+        assert response.decision.intent.value == "status_request"
+        assert first.run_id == completed.job_id
+        assert completed.run_id in bot.messages[-1].text
+        assert "Последняя завершённая задача" in bot.messages[-1].text
+
+    asyncio.run(scenario())
+
+
+def test_telegram_status_sees_active_job() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        provider = PausingTeamProvider()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake"),
+            provider_factory=lambda: provider,
+        )
+
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(provider.started.wait(), timeout=1)
+        response = await bridge.handle_text(chat_id=100, text="/status")
+
+        assert response.status == TeamRuntimeStatus.RUNNING
+        assert "Активная задача" in bot.messages[-1].text
+
+        provider.release.set()
+        await bridge.jobs.wait("100")
+
+    asyncio.run(scenario())
 
 
 def test_telegram_stopall_stops_active_runs() -> None:
-    bot = RecordingTelegramBot()
-    bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
-    controller = bridge.registry.get(100)
-    controller.state.active_runs["team_run_active"] = TeamActiveRun(run_id="team_run_active")
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        provider = PausingTeamProvider()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake"),
+            provider_factory=lambda: provider,
+        )
 
-    response = asyncio.run(bridge.handle_text(chat_id=100, text="/stopall"))
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(provider.started.wait(), timeout=1)
+        response = await bridge.handle_text(chat_id=100, text="/stopall")
 
-    assert response.status == TeamRuntimeStatus.CANCELLED
-    assert controller.state.active_runs == {}
-    assert controller.state.stopped_runs["team_run_active"].stop_requested is True
-    assert "Остановил активные runs: team_run_active" in bot.messages[-1].text
+        assert response.status == TeamRuntimeStatus.CANCELLED
+        assert bridge.jobs.snapshot("100").status == TeamJobStatus.CANCELLED
+        assert "Команда остановлена" in bot.messages[-1].text
+
+    asyncio.run(scenario())
+
+
+def test_telegram_rejects_second_task_when_job_is_active() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        provider = PausingTeamProvider()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake"),
+            provider_factory=lambda: provider,
+        )
+
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await asyncio.wait_for(provider.started.wait(), timeout=1)
+        response = await bridge.handle_text(chat_id=100, text="напиши второй план")
+
+        assert response.status == TeamRuntimeStatus.RUNNING
+        assert "задача уже выполняется" in bot.messages[-1].text.lower()
+
+        provider.release.set()
+        await bridge.jobs.wait("100")
+
+    asyncio.run(scenario())
+
+
+def test_telegram_failed_background_job_is_saved_as_last_failed() -> None:
+    async def scenario() -> None:
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(provider="fake"),
+            provider_factory=FailingTeamProvider,
+        )
+
+        response = await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        failed = await asyncio.wait_for(bridge.jobs.wait("100"), timeout=1)
+
+        assert response.status == TeamRuntimeStatus.RUNNING
+        assert failed.status == TeamJobStatus.FAILED
+        assert bridge.jobs.last_failed("100").job_id == failed.job_id
+        assert any("Можно продолжить" in message.text for message in bot.messages)
+
+    asyncio.run(scenario())
 
 
 def test_telegram_team_message_sink_routes_main_and_log_messages() -> None:
@@ -106,13 +249,17 @@ def test_telegram_team_message_sink_routes_main_and_log_messages() -> None:
 
 
 def test_telegram_bridge_fake_provider_does_not_import_nodriver_adapter() -> None:
-    sys.modules.pop("astra_nexus.team.nodriver_provider", None)
-    bot = RecordingTelegramBot()
-    bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
+    async def scenario() -> None:
+        sys.modules.pop("astra_nexus.team.nodriver_provider", None)
+        bot = RecordingTelegramBot()
+        bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
 
-    asyncio.run(bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды"))
+        await bridge.handle_text(chat_id=100, text="сделай краткий план AI-команды")
+        await bridge.jobs.wait("100")
 
-    assert "astra_nexus.team.nodriver_provider" not in sys.modules
+        assert "astra_nexus.team.nodriver_provider" not in sys.modules
+
+    asyncio.run(scenario())
 
 
 def test_telegram_bot_cli_creates_dispatcher_without_real_polling() -> None:
@@ -158,3 +305,13 @@ def test_telegram_preview_cli_uses_fake_provider_without_nodriver(capsys) -> Non
     assert "[Основной чат]" in output
     assert "fake:final_composer" in output
     assert "from astra_nexus.team.nodriver_provider import" not in source
+
+
+def test_telegram_job_preview_cli_runs_multiple_messages(capsys) -> None:
+    exit_code = main_job_preview(["сделай краткий план AI-команды", "/status", "/stopall"])
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "> сделай краткий план AI-команды" in output
+    assert "> /status" in output
+    assert "fake:final_composer" in output

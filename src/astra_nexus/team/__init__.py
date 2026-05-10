@@ -5,6 +5,14 @@ from astra_nexus.team.intake import (
     TeamIntakeDecision,
     TeamIntakeRouter,
 )
+from astra_nexus.team.jobs import (
+    TeamJob,
+    TeamJobAlreadyActiveError,
+    TeamJobHandle,
+    TeamJobManager,
+    TeamJobSnapshot,
+    TeamJobStatus,
+)
 from astra_nexus.team.messages import (
     CompositeTeamMessageSink,
     InMemoryTeamMessageSink,
@@ -84,6 +92,12 @@ __all__ = [
     "TeamInputIntent",
     "TeamIntakeDecision",
     "TeamIntakeRouter",
+    "TeamJob",
+    "TeamJobAlreadyActiveError",
+    "TeamJobHandle",
+    "TeamJobManager",
+    "TeamJobSnapshot",
+    "TeamJobStatus",
     "TeamProvider",
     "TeamProviderError",
     "TeamPromptBuilder",
