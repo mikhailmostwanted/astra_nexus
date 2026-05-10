@@ -155,7 +155,13 @@ class AsyncTeamOrchestrator:
             team_run,
             RunEventType.RUN_STARTED,
             "Командный run продолжен.",
-            payload={"status": team_run.status.value, "resumed": True},
+            payload={
+                "status": team_run.status.value,
+                "resumed": True,
+                "provider": self.provider.name,
+                "execution_mode": team_run.execution_mode.value,
+                "workspace": str(self.workspace_path) if self.workspace_path is not None else None,
+            },
         )
         return await self._execute_run(team_run)
 
@@ -183,7 +189,13 @@ class AsyncTeamOrchestrator:
             team_run,
             RunEventType.RUN_FINISHED,
             "Командный run завершён.",
-            payload={"status": team_run.status.value, "final_result": final_text},
+            payload={
+                "status": team_run.status.value,
+                "final_result": final_text,
+                "provider": self.provider.name,
+                "execution_mode": team_run.execution_mode.value,
+                "workspace": str(self.workspace_path) if self.workspace_path is not None else None,
+            },
         )
         self._append_dialogue_turn(team_run, build_completed_turn(run_id=team_run.id))
         return TeamRunOutcome(run=team_run, final_text=final_text)
@@ -195,7 +207,12 @@ class AsyncTeamOrchestrator:
             team_run,
             RunEventType.RUN_STARTED,
             "Командный run начат.",
-            payload={"status": team_run.status.value},
+            payload={
+                "status": team_run.status.value,
+                "provider": self.provider.name,
+                "execution_mode": team_run.execution_mode.value,
+                "workspace": str(self.workspace_path) if self.workspace_path is not None else None,
+            },
         )
 
     def _assign_execution_plan(self, team_run: TeamRun) -> None:
@@ -660,6 +677,9 @@ class AsyncTeamOrchestrator:
                 "error_code": exc.error_code,
                 "error_kind": exc.error_kind.value,
                 "transient": exc.transient,
+                "provider": self.provider.name,
+                "execution_mode": team_run.execution_mode.value,
+                "workspace": str(self.workspace_path) if self.workspace_path is not None else None,
             },
         )
 
@@ -677,6 +697,10 @@ class AsyncTeamOrchestrator:
             "role": profile.role.value,
             "agent_id": profile.profile_id,
             "task_id": agent_task.id,
+            "provider": self.provider.name,
+            "execution_mode": agent_task.execution_mode,
+            "execution_step_id": agent_task.execution_step_id,
+            "workspace": str(self.workspace_path) if self.workspace_path is not None else None,
             **(payload or {}),
         }
         self._append_event(

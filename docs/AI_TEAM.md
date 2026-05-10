@@ -217,14 +217,27 @@ astra-nexus-team-telegram-live-preview
 - `TEAM_TELEGRAM_MAX_FILE_SIZE_MB` - лимит одного Telegram файла.
 - `TEAM_TELEGRAM_HUMAN_MESSAGES=true|false` - включить или выключить живые реплики агентов
   в основном чате.
+- `TEAM_ATMOSPHERE_ENABLED=true|false` - включает слой живого, но контролируемого
+  Telegram rendering.
+- `TEAM_ATMOSPHERE_LEVEL=minimal|normal|cinematic` - плотность реплик. `minimal` режет
+  лишние сообщения, `normal` показывает рабочую команду, `cinematic` оставлен для более
+  выразительного тона без изменения orchestration.
+- `TEAM_ATMOSPHERE_SEND_DELAYS=true|false` - добавляет короткие задержки перед main-chat
+  репликами; default `false`.
+- `TEAM_ATMOSPHERE_MIN_DELAY_SECONDS` / `TEAM_ATMOSPHERE_MAX_DELAY_SECONDS` - диапазон
+  задержек, default `0.3` / `1.4`.
+- `TEAM_ATMOSPHERE_EMOJI_ENABLED=true|false` - emoji в голосах агентов; default `false`.
+- `TEAM_ATMOSPHERE_MAX_MAIN_MESSAGES_PER_RUN` - бюджет main-chat реплик, default `20`.
+- `TEAM_ATMOSPHERE_SUPPRESS_TECHNICAL_IN_MAIN=true|false` - не выводить технические
+  события в основной чат; default `true`.
 
 Поведение чатов:
 
-- основной чат получает короткое подтверждение `Принял задачу. Команда начала работу.`,
-  живые реплики агентов из dialogue/main channel и отдельное финальное сообщение;
+- основной чат получает короткое подтверждение `Босс, вижу задачу. Сначала разложу её на
+  части.`, humanized реплики агентов из atmosphere layer и отдельное финальное сообщение;
 - log chat получает технические события `run_started`, `agent_started`, `agent_finished`,
-  `run_finished`, `run_failed`, `run_cancelled` с `job_id`, `run_id`, `intent`, `status` и
-  workspace path, если он уже известен;
+  `run_finished`, `run_failed`, `run_cancelled` с `job_id`, `run_id`, `session_id`,
+  `intent`, `provider`, `execution_mode`, `workspace` и `status`;
 - если `TEAM_TELEGRAM_LOG_CHAT_ID` не задан, технические логи не отправляются в основной чат.
 
 Файлы:
@@ -234,17 +247,65 @@ astra-nexus-team-telegram-live-preview
 - `pdf`, `docx` и прочие форматы пока идут metadata-only;
 - оригинальное имя Telegram document сохраняется, файл копируется в workspace `input_files/`;
 - workspace получает `attachments.json`, `attachments.md` и `input_files/`;
-- файл без caption/текста не запускает run, бот просит уточнить задачу.
+- файл без caption/текста не запускает run и отвечает:
+  `Босс, файл вижу, но задачи к нему нет. Напиши, что с ним сделать: проверить,
+  переписать, сократить, сравнить или собрать итоговый вариант.`
 
 Команды:
 
-- `/status` показывает активную задачу, последний завершённый/failed/cancelled job, `run_id` и
-  workspace path без длинных логов.
+- `/status` показывает активную задачу, кто сейчас работает, `run_id`, workspace и последний
+  результат без длинных логов.
 - `/stopall` отменяет активный job в текущем chat/session и отвечает
-  `Остановил активную задачу.`; если активной задачи нет - `Активных задач сейчас нет.`
+  `Остановил активную задачу. Команда вернулась в общий чат.`; если активной задачи нет -
+  `Активных задач сейчас нет.`
 
 Обычная болтовня вроде `брат че думаешь`, `привет`, `как дела` проходит через intake-router и
-не запускает team run.
+не запускает team run. Ответ остаётся человеческим и коротким, без технического статуса.
+
+## Telegram Team Atmosphere v1
+
+`astra_nexus.team.atmosphere` - слой humanized rendering между core team stream и Telegram
+output. Он не создаёт отдельные ChatGPT-чаты, не меняет provider, не трогает NoDriver
+lifecycle и не запускает self-improving/Codex режим. Его задача - сделать основной чат
+живым и понятным, а технические события оставить в log chat.
+
+Основные сущности:
+
+- `AtmosphereProfile` - настройки включения, уровня, задержек, emoji, бюджета main-chat и
+  подавления технических сообщений.
+- `AtmosphereMessage` - нормализованная реплика atmosphere layer до отправки в Telegram.
+- `AtmosphereLevel` - `minimal`, `normal`, `cinematic`.
+- `AgentVoiceStyle` - короткое описание голоса роли и её стартовые/финальные реплики.
+- `TeamAtmosphereRenderer` - превращает dialogue turns и team messages в человеческий
+  main-chat текст.
+- `AtmosphereTeamMessageSink` - фильтрует технические main-chat события, применяет бюджет
+  сообщений и всегда пропускает финальный сигнал.
+
+Голоса агентов:
+
+- `coordinator` - спокойный руководитель: `Босс, вижу задачу. Сначала разложу её на части.`
+- `analyst` - аналитик по делу: `Разберу вводные, ограничения и факты без лишней драматизации.`
+- `critic` - строгий проверяющий: `Проверяю слабые места: критерии, риски и недосказанность.`
+- `editor` - аккуратный редактор: `Забираю правки, сейчас соберу более чистую версию.`
+- `qa_controller` - контроль готовности: `Сверяю результат с задачей, рисками и готовностью к отдаче.`
+- `final_composer` - чистая финальная сборка: `Финал готов. Ниже собранный вариант.`
+
+Разделение чатов:
+
+- `main_chat` - короткие humanized реплики и финальный ответ. Технические события сюда не
+  попадают при `TEAM_ATMOSPHERE_SUPPRESS_TECHNICAL_IN_MAIN=true`.
+- `log_chat` - технический поток: `run_started`, `agent_started`, `agent_finished`,
+  `run_finished`, `failed`, `cancelled` с `run_id`, `job_id`, `session_id`, `intent`,
+  `provider`, `execution_mode`, `workspace`, `status`.
+
+Preview без Telegram API:
+
+```bash
+astra-nexus-team-atmosphere-preview
+```
+
+Он показывает сценарии `casual text`, `new task`, `file without caption`, `file with
+caption`, `/status`, `/stopall` и явно разделяет `MAIN CHAT` / `LOG CHAT`.
 
 ## Parallel Agents Foundation v1
 
@@ -553,7 +614,7 @@ TELEGRAM_BOT_TOKEN=... astra-nexus-team-telegram-bot
 
 - обычный `casual_chat`, `empty_input` и `unknown` не создают background job;
 - новая задача создаёт `TeamJob` и сразу отвечает в основной чат:
-  `Принял задачу. Команда начала работу.`;
+  `Босс, вижу задачу. Сначала разложу её на части.`;
 - агентские `TeamMessage` продолжают уходить через Telegram sink по мере выполнения;
 - `/status` во время active job показывает job id, статус и run id, если run уже создан;
 - `/stopall` отменяет active job и сообщает, что команда остановлена;

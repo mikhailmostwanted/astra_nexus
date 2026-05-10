@@ -156,8 +156,8 @@ class TeamIntakeRouter:
                 0.82,
                 "attachments without clear task text",
                 (
-                    "Я вижу файл, но не понимаю, что именно с ним сделать. "
-                    "Скажи, нужно проверить, переписать, сократить или собрать итоговый документ?"
+                    "Босс, файл вижу, но задачи к нему нет. Напиши, что с ним сделать: "
+                    "проверить, переписать, сократить, сравнить или собрать итоговый вариант."
                 ),
             )
         if team_input.active_run_id and self._contains_any(text, self.followup_phrases):
@@ -196,7 +196,7 @@ class TeamIntakeRouter:
                 TeamInputIntent.CASUAL_CHAT,
                 0.72,
                 "short message without task markers",
-                "Понял, это обычный диалог, команду не запускаю.",
+                "Босс, я на связи. Можем спокойно обсудить или сразу превратить мысль в задачу.",
             )
         return self._decision(
             TeamInputIntent.UNKNOWN,

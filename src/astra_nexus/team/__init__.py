@@ -1,3 +1,12 @@
+from astra_nexus.team.atmosphere import (
+    AgentVoiceStyle,
+    AtmosphereLevel,
+    AtmosphereMessage,
+    AtmosphereProfile,
+    AtmosphereTeamMessageSink,
+    TeamAtmosphereRenderer,
+    default_agent_voice_styles,
+)
 from astra_nexus.team.attachments import (
     TeamAttachmentExtractionStatus,
     TeamAttachmentManifest,
@@ -104,6 +113,11 @@ __all__ = [
     "AgentRole",
     "AgentTask",
     "AgentTaskStatus",
+    "AgentVoiceStyle",
+    "AtmosphereLevel",
+    "AtmosphereMessage",
+    "AtmosphereProfile",
+    "AtmosphereTeamMessageSink",
     "AsyncTeamOrchestrator",
     "CompositeTeamMessageSink",
     "FakeProviderCall",
@@ -119,6 +133,7 @@ __all__ = [
     "TeamMessageSink",
     "TeamMessageType",
     "TeamActiveRun",
+    "TeamAtmosphereRenderer",
     "TeamAttachmentExtractionStatus",
     "TeamAttachmentManifest",
     "TeamAttachmentProcessor",
@@ -171,6 +186,7 @@ __all__ = [
     "TelegramTeamSession",
     "TelegramTeamSessionRegistry",
     "default_parallel_execution_plan",
+    "default_agent_voice_styles",
     "default_profiles_by_role",
     "default_sequential_execution_plan",
 ]

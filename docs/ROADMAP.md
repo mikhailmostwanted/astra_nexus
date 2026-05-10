@@ -111,6 +111,8 @@
 - Добавлен Parallel Agents Foundation v1: execution plan, parallel fake-provider режим, fallback на sequential для NoDriver.
 - Добавлен Team Review Protocol v1: task brief, критерии качества, review notes, revision requests, QA decision, один revision loop и final package.
 - Добавлен Telegram Live Team v1: aiogram polling runtime, allowlist чатов, файлы, `/status`, `/stopall`, main/log chat split, typing и safe fake-provider default.
+- Добавлен Telegram Team Atmosphere v1: humanized main-chat rendering, agent voice styles,
+  message budget, technical log chat и безопасные NoDriver window defaults.
 
 ---
 

@@ -17,6 +17,10 @@ from astra_nexus.brain.nodriver.exceptions import (
     NoDriverProfileLockedError,
 )
 from astra_nexus.brain.nodriver.lifecycle import NoDriverLifecycleManager
+from astra_nexus.brain.nodriver.windowing import (
+    build_nodriver_browser_args,
+    effective_nodriver_headless,
+)
 from astra_nexus.config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -31,6 +35,7 @@ class BrowserSession:
         lifecycle: NoDriverLifecycleManager | None = None,
     ) -> None:
         self.settings = settings
+        self.lifecycle_context = lifecycle_context
         self.lifecycle = lifecycle or NoDriverLifecycleManager(
             settings,
             context=lifecycle_context,
@@ -120,9 +125,18 @@ class BrowserSession:
     def build_start_kwargs(self, start_browser: Callable[..., Any] | None = None) -> dict[str, Any]:
         start_browser = start_browser or self._start_browser or self._load_nodriver_start()
         kwargs: dict[str, Any] = {
-            "headless": self.settings.nodriver_headless,
+            "headless": effective_nodriver_headless(
+                self.settings,
+                context=self.lifecycle_context,
+            ),
             "user_data_dir": str(self.user_data_dir),
         }
+        browser_args = build_nodriver_browser_args(
+            self.settings,
+            context=self.lifecycle_context,
+        )
+        if browser_args and self._supports_kwarg(start_browser, "browser_args"):
+            kwargs["browser_args"] = browser_args
         browser_executable_path = self.settings.nodriver_browser_executable_path
         if browser_executable_path is not None:
             kwargs["browser_executable_path"] = str(

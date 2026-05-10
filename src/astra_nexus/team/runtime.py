@@ -35,6 +35,7 @@ class TeamActiveRun:
     user_task: str = ""
     status: TeamRuntimeStatus = TeamRuntimeStatus.RUNNING
     workspace_path: Path | None = None
+    current_worker: str = "команда"
     stop_requested: bool = False
     stopped_at: datetime | None = None
     stop_reason: str | None = None
@@ -56,6 +57,8 @@ class TeamRuntimeState:
     last_run_id: str | None = None
     last_completed_run_id: str | None = None
     last_failed_run_id: str | None = None
+    last_workspace_path: Path | None = None
+    last_result_preview: str | None = None
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
 
@@ -226,23 +229,36 @@ class TeamConversationController:
         )
 
     def _status_response(self, decision: TeamIntakeDecision) -> TeamRuntimeResponse:
-        active_ids = ", ".join(self.state.active_runs) if self.state.active_runs else "нет"
+        active = next(iter(self.state.active_runs.values()), None)
+        active_text = "есть" if active is not None else "нет"
+        current_worker = active.current_worker if active is not None else "никто"
+        run_id = active.run_id if active is not None else self.state.last_run_id
+        workspace_path = (
+            active.workspace_path
+            if active is not None and active.workspace_path is not None
+            else self.state.last_workspace_path
+        )
+        lines = [
+            f"Активная задача: {active_text}.",
+            f"Кто работает: {current_worker}.",
+            f"run_id: {run_id or 'нет'}",
+            f"workspace: {workspace_path or 'нет'}",
+        ]
         if self.state.last_completed_run_id:
-            reply = (
-                f"Активные runs: {active_ids}. "
-                f"Последний завершённый run: {self.state.last_completed_run_id}."
-            )
-            run_id = self.state.last_completed_run_id
+            lines.append(f"Последний результат: {self.state.last_result_preview or 'нет'}")
+            response_run_id = self.state.last_completed_run_id
         elif self.state.last_failed_run_id:
-            reply = (
-                f"Активные runs: {active_ids}. "
-                f"Последний failed run: {self.state.last_failed_run_id}."
-            )
-            run_id = self.state.last_failed_run_id
+            lines.append("Последний результат: задача завершилась с ошибкой.")
+            response_run_id = self.state.last_failed_run_id
         else:
-            reply = f"Активные runs: {active_ids}. Завершённых run пока нет."
-            run_id = None
-        return self._response(decision=decision, run_id=run_id, user_visible_reply=reply)
+            lines.append("Последний результат: пока нет.")
+            response_run_id = run_id
+        return self._response(
+            decision=decision,
+            run_id=response_run_id,
+            workspace_path=workspace_path,
+            user_visible_reply="\n".join(lines),
+        )
 
     def _stop_all(self, decision: TeamIntakeDecision) -> TeamRuntimeResponse:
         stopped_ids = list(self.state.active_runs)
@@ -252,9 +268,9 @@ class TeamConversationController:
         self.state.active_runs.clear()
         self.state.touch()
         if stopped_ids:
-            reply = f"Остановил активные runs: {', '.join(stopped_ids)}."
+            reply = "Остановил активную задачу. Команда вернулась в общий чат."
         else:
-            reply = "Активных runs нет, останавливать нечего."
+            reply = "Активных задач сейчас нет."
         return self._response(
             decision=decision,
             status=TeamRuntimeStatus.CANCELLED,
@@ -298,6 +314,8 @@ class TeamConversationController:
         self.state.active_runs.pop(run.id, None)
         self.state.last_run_id = run.id
         self.state.last_completed_run_id = run.id
+        self.state.last_workspace_path = workspace_path
+        self.state.last_result_preview = _preview_text(run.final_text or "")
         self.state.touch()
         if run.id in self.state.stopped_runs:
             self.state.stopped_runs[run.id].workspace_path = workspace_path
@@ -306,6 +324,8 @@ class TeamConversationController:
         self.state.active_runs.pop(run.id, None)
         self.state.last_run_id = run.id
         self.state.last_failed_run_id = run.id
+        self.state.last_workspace_path = workspace_path
+        self.state.last_result_preview = None
         self.state.touch()
         if run.status != RunStatus.FAILED:
             run.status = RunStatus.FAILED
@@ -331,3 +351,10 @@ class TeamConversationController:
             outcome=outcome,
             state=self.state,
         )
+
+
+def _preview_text(text: str, *, limit: int = 180) -> str:
+    compact = " ".join(text.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 1].rstrip()}..."

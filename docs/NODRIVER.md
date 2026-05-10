@@ -12,6 +12,13 @@ Telegram, DB и workspace не зависят от деталей браузер
 BRAIN_PROVIDER=nodriver
 NODRIVER_USER_DATA_DIR=./data/browser_profiles/default
 NODRIVER_HEADLESS=false
+NODRIVER_WINDOW_MODE=small
+NODRIVER_WINDOW_WIDTH=1100
+NODRIVER_WINDOW_HEIGHT=800
+NODRIVER_WINDOW_X=20
+NODRIVER_WINDOW_Y=20
+NODRIVER_BACKGROUND_START=true
+NODRIVER_DISABLE_FOCUS_STEALING=true
 NODRIVER_CHATGPT_URL=https://chatgpt.com/
 NODRIVER_RESPONSE_TIMEOUT_SECONDS=180
 NODRIVER_PAGE_LOAD_TIMEOUT_SECONDS=60
@@ -29,6 +36,25 @@ NODRIVER_SCREENSHOTS_DIR=./data/debug/screenshots
 
 Если `NODRIVER_BROWSER_EXECUTABLE_PATH` пустой, NoDriver сам ищет Chrome/Chromium.
 Если путь задан, он передаётся в NoDriver как абсолютный путь.
+`NODRIVER_WINDOW_MODE=small` по умолчанию запускает Chrome небольшим окном через
+`--window-size` и `--window-position`, чтобы smoke/ask/team/Telegram режимы не
+разворачивали браузер на весь экран.
+`NODRIVER_WINDOW_MODE=normal` не добавляет window args и оставляет старое поведение
+NoDriver/Chrome.
+`NODRIVER_WINDOW_MODE=offscreen` добавляет позицию `--window-position=-32000,-32000`.
+Это удобно для фоновых проверок, но на macOS/Chrome нельзя гарантировать полный запрет
+focus stealing: система всё равно может кратко активировать новое окно. Astra Nexus
+делает best-effort через размер/позицию окна и не включает headless без явной настройки.
+`NODRIVER_WINDOW_MODE=headless` включает headless только явно. Старый
+`NODRIVER_HEADLESS=true` тоже продолжает включать headless.
+Для `astra-nexus-nodriver-login`, `astra-nexus-nodriver-dom-probe` и
+`astra-nexus-nodriver-insert-probe` offscreen/headless window mode автоматически
+превращается в видимый small mode, если `NODRIVER_HEADLESS=true` не задан напрямую:
+ручной вход и debug-проверки должны оставаться удобными.
+`NODRIVER_BACKGROUND_START` и `NODRIVER_DISABLE_FOCUS_STEALING` документируют желаемое
+поведение. В текущей реализации это безопасный best-effort, а не жёсткая гарантия
+macOS, потому что Chrome/NoDriver не дают надёжного cross-platform запрета на
+перехват фокуса при создании окна.
 `NODRIVER_START_TIMEOUT_SECONDS` передаётся в NoDriver, но сам NoDriver иногда
 возвращает `Failed to connect to browser` раньше этого timeout. Поэтому вокруг старта
 есть внешний retry-цикл: `NODRIVER_START_RETRIES` и

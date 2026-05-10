@@ -25,7 +25,9 @@ def test_runtime_casual_chat_does_not_create_run() -> None:
     assert response.status == TeamRuntimeStatus.IDLE
     assert response.run_id is None
     assert response.final_text is None
-    assert response.user_visible_reply == "Понял, это обычный диалог, команду не запускаю."
+    assert response.user_visible_reply == (
+        "Босс, я на связи. Можем спокойно обсудить или сразу превратить мысль в задачу."
+    )
     assert controller.state.active_runs == {}
 
 
@@ -59,7 +61,7 @@ def test_runtime_status_request_reports_last_completed_run(tmp_path) -> None:
     assert response.status == TeamRuntimeStatus.IDLE
     assert response.run_id == first.run_id
     assert first.run_id in response.user_visible_reply
-    assert "Последний завершённый run" in response.user_visible_reply
+    assert "Последний результат" in response.user_visible_reply
 
 
 def test_runtime_empty_input_does_not_create_run() -> None:
@@ -83,8 +85,8 @@ def test_runtime_file_without_clear_task_does_not_create_run() -> None:
     assert response.run_id is None
     assert controller.state.last_run_id is None
     assert response.user_visible_reply == (
-        "Я вижу файл, но не понимаю, что именно с ним сделать. "
-        "Скажи, нужно проверить, переписать, сократить или собрать итоговый документ?"
+        "Босс, файл вижу, но задачи к нему нет. Напиши, что с ним сделать: "
+        "проверить, переписать, сократить, сравнить или собрать итоговый вариант."
     )
 
 
@@ -99,7 +101,9 @@ def test_runtime_stop_all_clears_active_runs() -> None:
     assert state.active_runs == {}
     assert state.stopped_runs["team_run_active"].stop_requested is True
     assert state.stopped_runs["team_run_active"].stop_reason == "explicit stop command"
-    assert "Остановил активные runs: team_run_active" in response.user_visible_reply
+    assert (
+        response.user_visible_reply == "Остановил активную задачу. Команда вернулась в общий чат."
+    )
 
 
 def test_runtime_failed_provider_marks_last_failed_run_and_saves_workspace(tmp_path) -> None:

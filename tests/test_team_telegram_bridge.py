@@ -84,7 +84,9 @@ def test_telegram_preview_casual_does_not_create_run() -> None:
     assert response.decision.intent.value == "casual_chat"
     assert response.status == TeamRuntimeStatus.IDLE
     assert bridge.registry.get(100).state.last_run_id is None
-    assert bot.messages[-1].text == "Понял, это обычный диалог, команду не запускаю."
+    assert bot.messages[-1].text == (
+        "Босс, я на связи. Можем спокойно обсудить или сразу превратить мысль в задачу."
+    )
 
 
 def test_telegram_preview_task_starts_background_job() -> None:
@@ -104,7 +106,8 @@ def test_telegram_preview_task_starts_background_job() -> None:
         assert response.run_id is not None
         assert bridge.jobs.snapshot("100").status == TeamJobStatus.RUNNING
         assert any(
-            message.text == "Принял задачу. Команда начала работу." for message in bot.messages
+            message.text == "Босс, вижу задачу. Сначала разложу её на части."
+            for message in bot.messages
         )
 
         provider.release.set()
@@ -174,7 +177,9 @@ def test_telegram_stopall_stops_active_runs() -> None:
 
         assert response.status == TeamRuntimeStatus.CANCELLED
         assert bridge.jobs.snapshot("100").status == TeamJobStatus.CANCELLED
-        assert bot.messages[-1].text == "Остановил активную задачу."
+        assert bot.messages[-1].text == (
+            "Остановил активную задачу. Команда вернулась в общий чат."
+        )
 
     asyncio.run(scenario())
 
@@ -255,7 +260,7 @@ def test_telegram_bridge_with_attachment_without_task_waits_for_instruction(tmp_
         assert response.decision.intent.value == "file_task"
         assert response.decision.should_start_run is False
         assert provider.calls == []
-        assert any("что именно с ним сделать" in message.text for message in bot.messages)
+        assert any("файл вижу" in message.text for message in bot.messages)
 
     asyncio.run(scenario())
 
@@ -288,7 +293,7 @@ def test_telegram_bridge_message_attachment_without_task_waits_for_instruction(t
         assert response.decision.intent.value == "file_task"
         assert response.status == TeamRuntimeStatus.IDLE
         assert provider.calls == []
-        assert any("что именно с ним сделать" in message.text for message in bot.messages)
+        assert any("файл вижу" in message.text for message in bot.messages)
 
     asyncio.run(scenario())
 
@@ -376,7 +381,9 @@ def test_telegram_team_message_sink_routes_main_and_log_messages() -> None:
     assert sink.outbox[0].chat_id == 100
     assert sink.outbox[0].text == "[Артём] Босс, принял задачу."
     assert sink.outbox[1].chat_id == 200
-    assert sink.outbox[1].text == "[Лог] agent_started (event_type=agent_started)"
+    assert sink.outbox[1].text == (
+        "[Лог] agent_started (event_type=agent_started; run_id=team_run_1)"
+    )
 
 
 def test_telegram_bridge_sends_dialogue_to_main_chat_and_events_to_log_chat() -> None:
@@ -401,8 +408,8 @@ def test_telegram_bridge_sends_dialogue_to_main_chat_and_events_to_log_chat() ->
             for message in bot.messages
             if message.channel == TeamMessageChannel.LOG_CHAT
         ]
-        assert any("[Артём] Понял задачу" in text for text in main_texts)
-        assert any("[Саша] Собираю финальную версию." in text for text in main_texts)
+        assert any("[Артём] Босс, вижу задачу" in text for text in main_texts)
+        assert any("[Саша] Финал собираю" in text for text in main_texts)
         assert any("[Лог] Командный run начат." in text for text in log_texts)
         assert any("[Лог] Финальный сборщик подготовил ответ." in text for text in log_texts)
         assert all("Командный run начат" not in text for text in main_texts)
@@ -556,4 +563,4 @@ def test_telegram_live_preview_cli_simulates_main_and_log_chats(capsys) -> None:
     assert "> /stopall" in output
     assert "[Основной чат]" in output
     assert "[Лог]" in output
-    assert "что именно с ним сделать" in output
+    assert "файл вижу" in output

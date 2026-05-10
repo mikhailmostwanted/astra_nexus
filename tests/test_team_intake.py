@@ -27,7 +27,7 @@ def test_short_casual_phrase_is_casual_chat_and_does_not_create_run() -> None:
 
     assert decision.intent == TeamInputIntent.CASUAL_CHAT
     assert decision.should_start_run is False
-    assert "обычный диалог" in decision.user_visible_reply
+    assert "Босс, я на связи" in decision.user_visible_reply
     assert result.outcome is None
     assert controller.runs == []
 
@@ -64,8 +64,8 @@ def test_file_without_text_is_file_task_and_waits_for_clear_task() -> None:
     assert decision.intent == TeamInputIntent.FILE_TASK
     assert decision.should_start_run is False
     assert decision.user_visible_reply == (
-        "Я вижу файл, но не понимаю, что именно с ним сделать. "
-        "Скажи, нужно проверить, переписать, сократить или собрать итоговый документ?"
+        "Босс, файл вижу, но задачи к нему нет. Напиши, что с ним сделать: "
+        "проверить, переписать, сократить, сравнить или собрать итоговый вариант."
     )
 
 
@@ -74,7 +74,7 @@ def test_file_with_unclear_text_waits_for_clear_task() -> None:
 
     assert decision.intent == TeamInputIntent.FILE_TASK
     assert decision.should_start_run is False
-    assert "что именно с ним сделать" in decision.user_visible_reply
+    assert "файл вижу" in decision.user_visible_reply
 
 
 def test_stopall_is_stop_all_intent() -> None:

@@ -24,6 +24,7 @@ astra-nexus-nodriver-insert-probe = "astra_nexus.brain.nodriver.insert_probe:mai
 astra-nexus-nodriver-login = "astra_nexus.brain.nodriver.login:main"
 astra-nexus-nodriver-smoke = "astra_nexus.brain.nodriver.smoke:main"
 astra-nexus-team-ask = "astra_nexus.team.ask:main"
+astra-nexus-team-atmosphere-preview = "astra_nexus.team.atmosphere_preview:main"
 astra-nexus-team-chat-preview = "astra_nexus.team.chat_preview:main"
 astra-nexus-team-dialogue-preview = "astra_nexus.team.dialogue_preview:main"
 astra-nexus-team-file-preview = "astra_nexus.team.file_preview:main"

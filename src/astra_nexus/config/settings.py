@@ -133,6 +133,70 @@ class Settings(BaseSettings):
             "ASTRA_TEAM_UPLOADS_DIR",
         ),
     )
+    team_atmosphere_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "team_atmosphere_enabled",
+            "TEAM_ATMOSPHERE_ENABLED",
+            "ASTRA_TEAM_ATMOSPHERE_ENABLED",
+        ),
+    )
+    team_atmosphere_level: str = Field(
+        default="normal",
+        validation_alias=AliasChoices(
+            "team_atmosphere_level",
+            "TEAM_ATMOSPHERE_LEVEL",
+            "ASTRA_TEAM_ATMOSPHERE_LEVEL",
+        ),
+    )
+    team_atmosphere_send_delays: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "team_atmosphere_send_delays",
+            "TEAM_ATMOSPHERE_SEND_DELAYS",
+            "ASTRA_TEAM_ATMOSPHERE_SEND_DELAYS",
+        ),
+    )
+    team_atmosphere_min_delay_seconds: float = Field(
+        default=0.3,
+        validation_alias=AliasChoices(
+            "team_atmosphere_min_delay_seconds",
+            "TEAM_ATMOSPHERE_MIN_DELAY_SECONDS",
+            "ASTRA_TEAM_ATMOSPHERE_MIN_DELAY_SECONDS",
+        ),
+    )
+    team_atmosphere_max_delay_seconds: float = Field(
+        default=1.4,
+        validation_alias=AliasChoices(
+            "team_atmosphere_max_delay_seconds",
+            "TEAM_ATMOSPHERE_MAX_DELAY_SECONDS",
+            "ASTRA_TEAM_ATMOSPHERE_MAX_DELAY_SECONDS",
+        ),
+    )
+    team_atmosphere_emoji_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "team_atmosphere_emoji_enabled",
+            "TEAM_ATMOSPHERE_EMOJI_ENABLED",
+            "ASTRA_TEAM_ATMOSPHERE_EMOJI_ENABLED",
+        ),
+    )
+    team_atmosphere_max_main_messages_per_run: int = Field(
+        default=20,
+        validation_alias=AliasChoices(
+            "team_atmosphere_max_main_messages_per_run",
+            "TEAM_ATMOSPHERE_MAX_MAIN_MESSAGES_PER_RUN",
+            "ASTRA_TEAM_ATMOSPHERE_MAX_MAIN_MESSAGES_PER_RUN",
+        ),
+    )
+    team_atmosphere_suppress_technical_in_main: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "team_atmosphere_suppress_technical_in_main",
+            "TEAM_ATMOSPHERE_SUPPRESS_TECHNICAL_IN_MAIN",
+            "ASTRA_TEAM_ATMOSPHERE_SUPPRESS_TECHNICAL_IN_MAIN",
+        ),
+    )
     team_telegram_downloads_dir: Path = Field(
         default=Path("data/team_telegram_downloads"),
         validation_alias=AliasChoices(
@@ -161,6 +225,62 @@ class Settings(BaseSettings):
             "nodriver_headless",
             "ASTRA_NODRIVER_HEADLESS",
             "NODRIVER_HEADLESS",
+        ),
+    )
+    nodriver_window_mode: str = Field(
+        default="small",
+        validation_alias=AliasChoices(
+            "nodriver_window_mode",
+            "ASTRA_NODRIVER_WINDOW_MODE",
+            "NODRIVER_WINDOW_MODE",
+        ),
+    )
+    nodriver_window_width: int = Field(
+        default=1100,
+        validation_alias=AliasChoices(
+            "nodriver_window_width",
+            "ASTRA_NODRIVER_WINDOW_WIDTH",
+            "NODRIVER_WINDOW_WIDTH",
+        ),
+    )
+    nodriver_window_height: int = Field(
+        default=800,
+        validation_alias=AliasChoices(
+            "nodriver_window_height",
+            "ASTRA_NODRIVER_WINDOW_HEIGHT",
+            "NODRIVER_WINDOW_HEIGHT",
+        ),
+    )
+    nodriver_window_x: int = Field(
+        default=20,
+        validation_alias=AliasChoices(
+            "nodriver_window_x",
+            "ASTRA_NODRIVER_WINDOW_X",
+            "NODRIVER_WINDOW_X",
+        ),
+    )
+    nodriver_window_y: int = Field(
+        default=20,
+        validation_alias=AliasChoices(
+            "nodriver_window_y",
+            "ASTRA_NODRIVER_WINDOW_Y",
+            "NODRIVER_WINDOW_Y",
+        ),
+    )
+    nodriver_background_start: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "nodriver_background_start",
+            "ASTRA_NODRIVER_BACKGROUND_START",
+            "NODRIVER_BACKGROUND_START",
+        ),
+    )
+    nodriver_disable_focus_stealing: bool = Field(
+        default=True,
+        validation_alias=AliasChoices(
+            "nodriver_disable_focus_stealing",
+            "ASTRA_NODRIVER_DISABLE_FOCUS_STEALING",
+            "NODRIVER_DISABLE_FOCUS_STEALING",
         ),
     )
     nodriver_start_timeout_seconds: int = Field(
@@ -355,6 +475,24 @@ class Settings(BaseSettings):
     def empty_browser_executable_path_as_none(cls, value: object) -> object:
         if value == "":
             return None
+        return value
+
+    @field_validator("team_atmosphere_level", mode="before")
+    @classmethod
+    def normalize_team_atmosphere_level(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"minimal", "normal", "cinematic"}:
+                return normalized
+        return value
+
+    @field_validator("nodriver_window_mode", mode="before")
+    @classmethod
+    def normalize_nodriver_window_mode(cls, value: object) -> object:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"normal", "small", "offscreen", "headless"}:
+                return normalized
         return value
 
     @property

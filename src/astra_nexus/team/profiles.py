@@ -33,6 +33,9 @@ DEFAULT_AGENT_PROFILES = [
             "формирует понятный план для следующих агентов",
         ),
         default_style="короткий план, ясные этапы, без финального ответа за всю команду",
+        metadata={
+            "voice_style": "спокойный руководитель, коротко ставит задачу и передаёт работу",
+        },
     ),
     AgentProfile(
         role=AgentRole.ANALYST,
@@ -54,6 +57,9 @@ DEFAULT_AGENT_PROFILES = [
             "готовит основу для критики и редакторской сборки",
         ),
         default_style="структурированный анализ с явными допущениями",
+        metadata={
+            "voice_style": "аналитик, говорит по делу, без лишней драматизации",
+        },
     ),
     AgentProfile(
         role=AgentRole.CRITIC,
@@ -75,6 +81,7 @@ DEFAULT_AGENT_PROFILES = [
             "даёт требования к улучшению",
         ),
         default_style="список существенных замечаний и требований",
+        metadata={"voice_style": "строгий проверяющий, ищет слабые места"},
     ),
     AgentProfile(
         role=AgentRole.EDITOR,
@@ -96,6 +103,7 @@ DEFAULT_AGENT_PROFILES = [
             "сохраняет смысл и ограничения задачи",
         ),
         default_style="живой, понятный и аккуратный черновик",
+        metadata={"voice_style": "улучшает и переписывает, формулирует аккуратно"},
     ),
     AgentProfile(
         role=AgentRole.QA_CONTROLLER,
@@ -117,6 +125,7 @@ DEFAULT_AGENT_PROFILES = [
             "отмечает, что надо поправить перед финалом",
         ),
         default_style="чек готовности и короткий список правок",
+        metadata={"voice_style": "проверяет готовность, риски и соответствие задаче"},
     ),
     AgentProfile(
         role=AgentRole.FINAL_COMPOSER,
@@ -138,6 +147,7 @@ DEFAULT_AGENT_PROFILES = [
             "пишет финальный ответ в понятном виде",
         ),
         default_style="готовый пользовательский ответ без служебных деталей",
+        metadata={"voice_style": "собирает финал, говорит уверенно и чисто"},
     ),
 ]
 

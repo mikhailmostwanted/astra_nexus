@@ -94,6 +94,85 @@ def test_browser_session_builds_start_kwargs_with_timeout_no_sandbox_and_executa
     assert kwargs["browser_executable_path"] == str((tmp_path / "Chrome").resolve())
 
 
+def test_browser_session_small_window_mode_adds_size_and_position(tmp_path: Path) -> None:
+    settings = Settings(
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_window_mode="small",
+        nodriver_window_width=900,
+        nodriver_window_height=700,
+        nodriver_window_x=30,
+        nodriver_window_y=40,
+    )
+    session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
+
+    kwargs = session.build_start_kwargs()
+
+    assert kwargs["headless"] is False
+    assert kwargs["browser_args"] == ["--window-size=900,700", "--window-position=30,40"]
+
+
+def test_browser_session_offscreen_window_mode_adds_offscreen_position(tmp_path: Path) -> None:
+    settings = Settings(
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_window_mode="offscreen",
+    )
+    session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
+
+    kwargs = session.build_start_kwargs()
+
+    assert kwargs["headless"] is False
+    assert kwargs["browser_args"] == ["--window-size=1100,800", "--window-position=-32000,-32000"]
+
+
+def test_browser_session_normal_window_mode_does_not_add_window_args(tmp_path: Path) -> None:
+    settings = Settings(
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_window_mode="normal",
+    )
+    session = BrowserSession(settings=settings, start_browser=lambda **_: FakeBrowser())
+
+    kwargs = session.build_start_kwargs()
+
+    assert kwargs["headless"] is False
+    assert "browser_args" not in kwargs
+
+
+def test_browser_session_headless_mode_is_explicit_only(tmp_path: Path) -> None:
+    default_settings = Settings(nodriver_user_data_dir=tmp_path / "default")
+    default_session = BrowserSession(
+        settings=default_settings,
+        start_browser=lambda **_: FakeBrowser(),
+    )
+    headless_settings = Settings(
+        nodriver_user_data_dir=tmp_path / "headless",
+        nodriver_window_mode="headless",
+    )
+    headless_session = BrowserSession(
+        settings=headless_settings,
+        start_browser=lambda **_: FakeBrowser(),
+    )
+
+    assert default_session.build_start_kwargs()["headless"] is False
+    assert headless_session.build_start_kwargs()["headless"] is True
+
+
+def test_browser_session_login_context_keeps_manual_window_visible(tmp_path: Path) -> None:
+    settings = Settings(
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_window_mode="offscreen",
+    )
+    session = BrowserSession(
+        settings=settings,
+        start_browser=lambda **_: FakeBrowser(),
+        lifecycle_context="login",
+    )
+
+    kwargs = session.build_start_kwargs()
+
+    assert kwargs["headless"] is False
+    assert kwargs["browser_args"] == ["--window-size=1100,800", "--window-position=20,20"]
+
+
 def test_browser_session_maps_repeated_start_failures_to_browser_connect_failed(
     tmp_path: Path,
 ) -> None:

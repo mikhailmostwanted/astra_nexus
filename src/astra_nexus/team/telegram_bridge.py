@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import importlib
+import random
 import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -10,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from astra_nexus.config.settings import Settings, load_settings
+from astra_nexus.team.atmosphere import (
+    AtmosphereProfile,
+    AtmosphereTeamMessageSink,
+    TeamAtmosphereRenderer,
+)
 from astra_nexus.team.attachments import (
     TeamAttachmentProcessor,
     TeamInputAttachment,
@@ -50,6 +56,7 @@ class TelegramTeamBridgeConfig:
     environment: str = "local"
     send_typing: bool = True
     human_messages: bool = True
+    atmosphere: AtmosphereProfile = field(default_factory=AtmosphereProfile)
 
     @classmethod
     def from_settings(cls, settings: Settings) -> TelegramTeamBridgeConfig:
@@ -66,6 +73,7 @@ class TelegramTeamBridgeConfig:
             environment=settings.environment,
             send_typing=settings.team_telegram_send_typing,
             human_messages=settings.team_telegram_human_messages,
+            atmosphere=AtmosphereProfile.from_settings(settings),
         )
 
 
@@ -123,10 +131,18 @@ class TelegramTeamMessageSink(TeamMessageSink):
         chat_id: int,
         log_chat_id: int | None = None,
         human_messages: bool = True,
+        session_id: str | None = None,
+        provider: str | None = None,
+        execution_mode: str | None = None,
     ) -> None:
         self.chat_id = chat_id
         self.log_chat_id = log_chat_id
         self.human_messages = human_messages
+        self.session_id = session_id
+        self.provider = provider
+        self.execution_mode = execution_mode
+        self.current_job_id: str | None = None
+        self.current_intent: str | None = None
         self.outbox: list[TelegramOutgoingMessage] = []
         self.auto_sender: Callable[[TelegramOutgoingMessage], None] | None = None
 
@@ -158,12 +174,25 @@ class TelegramTeamMessageSink(TeamMessageSink):
 
     def _render_log(self, message: TeamMessage) -> str:
         details = []
-        for key in ("event_type", "run_id", "job_id", "intent", "status", "workspace"):
-            value = message.metadata.get(key)
+        for key, value in (
+            ("event_type", message.metadata.get("event_type")),
+            ("run_id", message.metadata.get("run_id") or message.run_id),
+            ("job_id", message.metadata.get("job_id") or self.current_job_id),
+            ("session_id", message.metadata.get("session_id") or self.session_id),
+            ("intent", message.metadata.get("intent") or self.current_intent),
+            ("provider", message.metadata.get("provider") or self.provider),
+            ("execution_mode", message.metadata.get("execution_mode") or self.execution_mode),
+            ("workspace", message.metadata.get("workspace")),
+            ("status", message.metadata.get("status")),
+        ):
             if value:
                 details.append(f"{key}={value}")
         suffix = f" ({'; '.join(details)})" if details else ""
         return f"[Лог] {message.text}{suffix}"
+
+    def set_job_context(self, *, job_id: str | None, intent: str | None) -> None:
+        self.current_job_id = job_id
+        self.current_intent = intent
 
     def pop_outbox(self) -> list[TelegramOutgoingMessage]:
         messages = list(self.outbox)
@@ -210,12 +239,18 @@ class TelegramTeamSessionRegistry:
                 chat_id=chat_id,
                 log_chat_id=self.config.log_chat_id,
                 human_messages=self.config.human_messages,
+                session_id=str(chat_id),
+                provider=self.config.provider,
+                execution_mode="sequential",
             )
             self.sessions[chat_id] = TelegramTeamSession(
                 controller=TeamConversationController(
                     provider=self.provider_factory(),
                     workspace=TeamRunWorkspace(root_path=self.config.workspace_root),
-                    message_sink=sink,
+                    message_sink=AtmosphereTeamMessageSink(
+                        sink,
+                        renderer=TeamAtmosphereRenderer(self.config.atmosphere),
+                    ),
                 ),
                 sink=sink,
             )
@@ -348,6 +383,13 @@ class TelegramTeamBridge:
     async def _send(self, message: TelegramOutgoingMessage) -> None:
         if message.send_typing and self.config.send_typing:
             await self._send_typing(message.chat_id)
+        if message.channel == TeamMessageChannel.MAIN_CHAT and self.config.atmosphere.send_delays:
+            await asyncio.sleep(
+                random.uniform(
+                    self.config.atmosphere.min_delay_seconds,
+                    self.config.atmosphere.max_delay_seconds,
+                )
+            )
         if isinstance(self.bot, RecordingTelegramBot):
             await self.bot.send_message(
                 chat_id=message.chat_id,
@@ -390,6 +432,9 @@ class TelegramTeamBridge:
         intent: str | None = None,
         status: str | None = None,
         workspace: Path | None = None,
+        session_id: str | None = None,
+        provider: str | None = None,
+        execution_mode: str | None = None,
     ) -> None:
         if self.config.log_chat_id is None:
             return
@@ -401,6 +446,9 @@ class TelegramTeamBridge:
                 intent=intent,
                 status=status,
                 workspace=workspace,
+                session_id=session_id,
+                provider=provider,
+                execution_mode=execution_mode,
             )
         )
         self._send_tasks.add(task)
@@ -415,15 +463,23 @@ class TelegramTeamBridge:
         intent: str | None = None,
         status: str | None = None,
         workspace: Path | None = None,
+        session_id: str | None = None,
+        provider: str | None = None,
+        execution_mode: str | None = None,
     ) -> None:
         if self.config.log_chat_id is None:
             return
         details = [
             f"job_id={job_id}",
             f"run_id={run_id or 'pending'}",
+            f"session_id={session_id or 'unknown'}",
         ]
         if intent:
             details.append(f"intent={intent}")
+        if provider:
+            details.append(f"provider={provider}")
+        if execution_mode:
+            details.append(f"execution_mode={execution_mode}")
         if status:
             details.append(f"status={status}")
         details.append(f"workspace={workspace or 'pending'}")
@@ -489,11 +545,15 @@ class TelegramTeamBridge:
                 state=session.controller.state,
             )
 
+        session.sink.set_job_context(job_id=handle.job.id, intent=decision.intent.value)
         self._schedule_log(
             text="run_started",
             job_id=handle.job.id,
             intent=decision.intent.value,
             status=TeamJobStatus.RUNNING.value,
+            session_id=session_id,
+            provider=self.config.provider,
+            execution_mode="sequential",
         )
         watch_task = asyncio.create_task(
             self._watch_job(chat_id=chat_id, handle=handle, intent=decision.intent.value)
@@ -501,7 +561,7 @@ class TelegramTeamBridge:
         self._watch_tasks.add(watch_task)
         watch_task.add_done_callback(self._watch_tasks.discard)
         return TeamRuntimeResponse(
-            user_visible_reply="Принял задачу. Команда начала работу.",
+            user_visible_reply=TeamAtmosphereRenderer(self.config.atmosphere).task_started_reply(),
             decision=decision,
             status=TeamRuntimeStatus.RUNNING,
             run_id=handle.job.id,
@@ -538,7 +598,9 @@ class TelegramTeamBridge:
         await controller.handle(team_input)
         if snapshot is None:
             return TeamRuntimeResponse(
-                user_visible_reply="Активных задач сейчас нет.",
+                user_visible_reply=TeamAtmosphereRenderer(self.config.atmosphere).stopall_reply(
+                    had_active_task=False
+                ),
                 decision=decision,
                 status=TeamRuntimeStatus.CANCELLED,
                 state=controller.state,
@@ -550,12 +612,15 @@ class TelegramTeamBridge:
             intent=decision.intent.value,
             status=snapshot.status.value,
             workspace=snapshot.workspace_path,
+            session_id=session_id,
+            provider=self.config.provider,
+            execution_mode="sequential",
         )
         return self._job_response(
             decision=decision,
             snapshot=snapshot,
             state=controller.state,
-            text="Остановил активную задачу.",
+            text=TeamAtmosphereRenderer(self.config.atmosphere).stopall_reply(had_active_task=True),
         )
 
     async def _watch_job(self, *, chat_id: int, handle: TeamJobHandle, intent: str) -> None:
@@ -569,6 +634,9 @@ class TelegramTeamBridge:
                 intent=intent,
                 status=snapshot.status.value,
                 workspace=snapshot.workspace_path,
+                session_id=snapshot.session_id,
+                provider=self.config.provider,
+                execution_mode="sequential",
             )
             await self._send(
                 TelegramOutgoingMessage(
@@ -585,6 +653,9 @@ class TelegramTeamBridge:
                 intent=intent,
                 status=snapshot.status.value,
                 workspace=snapshot.workspace_path,
+                session_id=snapshot.session_id,
+                provider=self.config.provider,
+                execution_mode="sequential",
             )
             await self._send(
                 TelegramOutgoingMessage(
@@ -623,41 +694,51 @@ class TelegramTeamBridge:
 
     def _status_text(self, snapshot: TeamJobSnapshot) -> str:
         run = snapshot.run_id or "ещё не создан"
+        workspace = snapshot.workspace_path or "нет"
         if snapshot.status in {TeamJobStatus.PENDING, TeamJobStatus.RUNNING}:
-            lines = [
-                "Активная задача: есть.",
-                f"job_id: {snapshot.job_id}",
-                f"status: {snapshot.status.value}",
-                f"run_id: {run}",
-            ]
-            if snapshot.workspace_path:
-                lines.append(f"workspace: {snapshot.workspace_path}")
-            return "\n".join(lines)
+            return "\n".join(
+                [
+                    "Активная задача: есть.",
+                    "Кто работает: команда.",
+                    f"job_id: {snapshot.job_id}",
+                    f"status: {snapshot.status.value}",
+                    f"run_id: {run}",
+                    f"workspace: {workspace}",
+                    "Последний результат: пока нет.",
+                ]
+            )
         if snapshot.status == TeamJobStatus.COMPLETED:
-            lines = [
-                "Активная задача: нет.",
-                f"Последняя завершённая задача: {snapshot.job_id}.",
-                f"run_id: {run}",
-            ]
-            if snapshot.workspace_path:
-                lines.append(f"workspace: {snapshot.workspace_path}")
-            return "\n".join(lines)
+            return "\n".join(
+                [
+                    "Активная задача: нет.",
+                    "Кто работает: никто.",
+                    f"Последняя завершённая задача: {snapshot.job_id}.",
+                    f"run_id: {run}",
+                    f"workspace: {workspace}",
+                    f"Последний результат: {_preview_text(snapshot.final_text or '')}",
+                ]
+            )
         if snapshot.status == TeamJobStatus.FAILED:
             lines = [
                 "Активная задача: нет.",
-                f"Последняя failed задача: {snapshot.job_id}.",
+                "Кто работает: никто.",
+                f"job_id: {snapshot.job_id}",
+                f"status: {snapshot.status.value}",
                 f"run_id: {run}",
+                f"workspace: {workspace}",
+                "Последний результат: задача завершилась с ошибкой.",
             ]
-            if snapshot.workspace_path:
-                lines.append(f"workspace: {snapshot.workspace_path}")
             if snapshot.error_message:
                 lines.append(f"error: {snapshot.error_message}")
             return "\n".join(lines)
         return "\n".join(
             [
                 "Активная задача: нет.",
+                "Кто работает: никто.",
                 f"Последняя задача отменена: {snapshot.job_id}.",
                 f"run_id: {run}",
+                f"workspace: {workspace}",
+                "Последний результат: задача отменена.",
             ]
         )
 
@@ -1090,6 +1171,15 @@ def _print_new_messages(messages: list[TelegramOutgoingMessage], printed_count: 
         label = "Лог" if outgoing.channel == TeamMessageChannel.LOG_CHAT else "Основной чат"
         print(f"[{label}] {outgoing.text}")
     return len(messages)
+
+
+def _preview_text(text: str, *, limit: int = 180) -> str:
+    compact = " ".join(text.split())
+    if not compact:
+        return "нет"
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 1].rstrip()}..."
 
 
 if __name__ == "__main__":
