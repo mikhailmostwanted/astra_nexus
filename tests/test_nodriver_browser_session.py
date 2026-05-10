@@ -198,6 +198,39 @@ def test_browser_session_maps_repeated_start_failures_to_browser_connect_failed(
     assert "Failed to connect to browser" in str(exc.value)
 
 
+def test_browser_session_retries_browser_connect_with_safe_window_fallback(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def flaky_start(**kwargs: object) -> FakeBrowser:
+        calls.append(dict(kwargs))
+        if len(calls) == 1:
+            raise RuntimeError("Failed to connect to browser")
+        return FakeBrowser()
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        nodriver_user_data_dir=tmp_path / "profile",
+        nodriver_window_mode="small",
+        nodriver_window_width=900,
+        nodriver_window_height=700,
+        nodriver_window_x=30,
+        nodriver_window_y=40,
+        nodriver_start_retry_attempts=2,
+        nodriver_start_retry_delay_seconds=0,
+    )
+    session = BrowserSession(settings=settings, start_browser=flaky_start)
+
+    browser = asyncio.run(session.start())
+
+    assert isinstance(browser, FakeBrowser)
+    assert calls[0]["browser_args"] == ["--window-size=900,700", "--window-position=30,40"]
+    assert "browser_args" not in calls[1]
+    assert "fallback window mode" in caplog.text
+
+
 def test_browser_session_cleans_runtime_and_chrome_locks_between_start_retries(
     tmp_path: Path,
 ) -> None:

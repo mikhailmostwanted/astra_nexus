@@ -13,6 +13,16 @@ NoDriver lifecycle.
    - `TEAM_TELEGRAM_LOG_CHAT_ID=<log chat id>` при наличии отдельного лог-чата.
    - `TEAM_RUNS_DIR=./data/team_runs`
    - `TEAM_TELEGRAM_DOWNLOADS_DIR=./data/team_telegram_downloads`
+
+   Обычная Telegram-группа может автоматически мигрировать в supergroup. Если в логах
+   видно `TelegramMigrateToChat: group migrated to supergroup with id -100... from ...`,
+   используй новый id формата `-100...` в allowlist и log chat:
+
+   ```env
+   TEAM_TELEGRAM_ALLOWED_CHAT_IDS=-1003721761135
+   TEAM_TELEGRAM_LOG_CHAT_ID=-1003902519410
+   ```
+
 3. Проверить локальную готовность:
 
 ```bash

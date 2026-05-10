@@ -92,6 +92,31 @@ class TracebackLikeFailingProvider(TeamProvider):
         )
 
 
+class _TelegramMethod:
+    def __init__(self, chat_id: int) -> None:
+        self.chat_id = chat_id
+
+
+class MigratingSendMessageBot:
+    def __init__(self, *, old_chat_id: int, new_chat_id: int) -> None:
+        self.old_chat_id = old_chat_id
+        self.new_chat_id = new_chat_id
+        self.message_calls: list[dict[str, object]] = []
+        self._migration_sent = False
+
+    async def send_message(self, chat_id: int, text: str, **kwargs: object) -> None:
+        self.message_calls.append({"chat_id": chat_id, "text": text, **kwargs})
+        if chat_id == self.old_chat_id and not self._migration_sent:
+            self._migration_sent = True
+            from aiogram.exceptions import TelegramMigrateToChat
+
+            raise TelegramMigrateToChat(
+                method=_TelegramMethod(chat_id),
+                message="group migrated to supergroup",
+                migrate_to_chat_id=self.new_chat_id,
+            )
+
+
 def test_telegram_preview_casual_does_not_create_run() -> None:
     bot = RecordingTelegramBot()
     bridge = TelegramTeamBridge(bot=bot, config=TelegramTeamBridgeConfig(provider="fake"))
@@ -468,6 +493,38 @@ def test_telegram_denied_chat_gets_safe_response_and_no_job() -> None:
         assert response is None
         assert bridge.jobs.snapshot("100") is None
         assert bot.messages[-1].text == "Этот чат не подключён к AI-команде."
+
+    asyncio.run(scenario())
+
+
+def test_telegram_bridge_retries_send_message_after_group_migration(caplog) -> None:
+    async def scenario() -> None:
+        old_chat_id = -5218150544
+        new_chat_id = -1003721761135
+        bot = MigratingSendMessageBot(old_chat_id=old_chat_id, new_chat_id=new_chat_id)
+        bridge = TelegramTeamBridge(
+            bot=bot,
+            config=TelegramTeamBridgeConfig(
+                provider="fake",
+                allowed_chat_ids=(old_chat_id,),
+            ),
+        )
+
+        response = await bridge.handle_text(chat_id=old_chat_id, text="/help")
+
+        assert response is not None
+        assert [call["chat_id"] for call in bot.message_calls[:2]] == [
+            old_chat_id,
+            new_chat_id,
+        ]
+        assert bridge._resolve_migrated_chat_id(old_chat_id) == new_chat_id
+        assert bridge._chat_allowed(new_chat_id) is True
+
+        next_response = await bridge.handle_text(chat_id=new_chat_id, text="/health")
+
+        assert next_response is not None
+        assert bot.message_calls[-1]["chat_id"] == new_chat_id
+        assert "Telegram chat migrated" in caplog.text
 
     asyncio.run(scenario())
 

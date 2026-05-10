@@ -212,6 +212,10 @@ astra-nexus-team-telegram-live-preview
 - `TEAM_TELEGRAM_ALLOWED_CHAT_IDS` - comma-separated allowlist chat id. Если пусто, в
   `local/dev/test` окружении разрешены все чаты; в других окружениях чат должен быть задан.
 - `TEAM_TELEGRAM_LOG_CHAT_ID` - отдельный чат для технических run/job логов.
+- Обычная Telegram-группа может мигрировать в supergroup. После
+  `TelegramMigrateToChat` используй новый id формата `-100...`, например:
+  `TEAM_TELEGRAM_ALLOWED_CHAT_IDS=-1003721761135` и
+  `TEAM_TELEGRAM_LOG_CHAT_ID=-1003902519410`.
 - `TEAM_TELEGRAM_DOWNLOADS_DIR` - куда сохраняются скачанные Telegram файлы до workspace.
 - `TEAM_TELEGRAM_SEND_TYPING=true|false` - отправлять одиночный `typing` перед живыми
   репликами и финалом.
@@ -681,6 +685,8 @@ Provider mode:
 - `TEAM_TELEGRAM_LOG_CHAT_ID` - отдельный chat id для технического лога.
 - `TEAM_TELEGRAM_ALLOWED_CHAT_IDS` - comma-separated allowlist chat ids. Если пусто,
   bridge принимает все чаты.
+- Для migrated supergroup указывай новый id формата `-100...`; bridge ретраит
+  отправку после `TelegramMigrateToChat` один раз и обновляет runtime chat id.
 
 Preview без реального Telegram и без NoDriver:
 

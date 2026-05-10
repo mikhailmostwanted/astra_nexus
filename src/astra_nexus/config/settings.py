@@ -302,7 +302,7 @@ class Settings(BaseSettings):
         ),
     )
     nodriver_background_start: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices(
             "nodriver_background_start",
             "ASTRA_NODRIVER_BACKGROUND_START",
@@ -310,7 +310,7 @@ class Settings(BaseSettings):
         ),
     )
     nodriver_disable_focus_stealing: bool = Field(
-        default=True,
+        default=False,
         validation_alias=AliasChoices(
             "nodriver_disable_focus_stealing",
             "ASTRA_NODRIVER_DISABLE_FOCUS_STEALING",

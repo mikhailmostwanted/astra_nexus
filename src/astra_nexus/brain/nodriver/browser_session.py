@@ -51,16 +51,20 @@ class BrowserSession:
 
         try:
             start_browser = self._start_browser or self._load_nodriver_start()
-            kwargs = self.build_start_kwargs(start_browser)
         except Exception:
             raise
 
         last_error: Exception | None = None
         cleanup_left_profile_locked = False
         max_attempts = max(1, self.settings.nodriver_start_retry_attempts)
+        fallback_window_mode = False
         for attempt in range(1, max_attempts + 1):
             previous_profile_process_pids: set[int] = set()
             try:
+                kwargs = self.build_start_kwargs(
+                    start_browser,
+                    fallback_window_mode=fallback_window_mode,
+                )
                 self.lifecycle.acquire()
                 previous_profile_process_pids = {
                     process.pid for process in self.lifecycle.inspect().live_profile_processes
@@ -104,6 +108,16 @@ class BrowserSession:
                 if cleanup_report.live_profile_processes:
                     cleanup_left_profile_locked = True
                     break
+                if self._should_enable_window_fallback(
+                    exc,
+                    fallback_window_mode=fallback_window_mode,
+                    kwargs=kwargs,
+                ):
+                    fallback_window_mode = True
+                    logger.warning(
+                        "NoDriver fallback window mode enabled after browser connect failure; "
+                        "next start will avoid window-position/window-size/background flags"
+                    )
                 if attempt < max_attempts:
                     await asyncio.sleep(self._start_retry_backoff_seconds())
 
@@ -122,18 +136,25 @@ class BrowserSession:
         )
         raise NoDriverBrowserConnectError(message, action=action) from last_error
 
-    def build_start_kwargs(self, start_browser: Callable[..., Any] | None = None) -> dict[str, Any]:
+    def build_start_kwargs(
+        self,
+        start_browser: Callable[..., Any] | None = None,
+        *,
+        fallback_window_mode: bool = False,
+    ) -> dict[str, Any]:
         start_browser = start_browser or self._start_browser or self._load_nodriver_start()
         kwargs: dict[str, Any] = {
             "headless": effective_nodriver_headless(
                 self.settings,
                 context=self.lifecycle_context,
+                fallback_window_mode=fallback_window_mode,
             ),
             "user_data_dir": str(self.user_data_dir),
         }
         browser_args = build_nodriver_browser_args(
             self.settings,
             context=self.lifecycle_context,
+            fallback_window_mode=fallback_window_mode,
         )
         if browser_args and self._supports_kwarg(start_browser, "browser_args"):
             kwargs["browser_args"] = browser_args
@@ -151,6 +172,24 @@ class BrowserSession:
         elif self._supports_kwarg(start_browser, "no_sandbox"):
             kwargs["no_sandbox"] = self.settings.nodriver_no_sandbox
         return kwargs
+
+    def _should_enable_window_fallback(
+        self,
+        exc: Exception,
+        *,
+        fallback_window_mode: bool,
+        kwargs: dict[str, Any],
+    ) -> bool:
+        if fallback_window_mode:
+            return False
+        if "Failed to connect to browser" not in str(exc):
+            return False
+        return bool(
+            kwargs.get("browser_args")
+            or kwargs.get("headless")
+            or self.settings.nodriver_background_start
+            or self.settings.nodriver_disable_focus_stealing
+        )
 
     def _start_retry_backoff_seconds(self) -> float:
         return max(0.0, float(self.settings.nodriver_start_retry_backoff_seconds))

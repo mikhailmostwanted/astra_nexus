@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import importlib
 import json
+import logging
 import random
 import tempfile
 from collections.abc import Callable, Iterable
@@ -43,6 +44,7 @@ from astra_nexus.utils.logging import configure_logging
 
 DEFAULT_TELEGRAM_PREVIEW_MESSAGE = "брат че думаешь"
 DEFAULT_PROVIDER = "fake"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -323,9 +325,10 @@ class TelegramTeamBridge:
         )
         self._send_tasks: set[asyncio.Task[None]] = set()
         self._watch_tasks: set[asyncio.Task[None]] = set()
+        self._migrated_chat_ids: dict[int, int] = {}
 
     async def handle_message(self, message: Any) -> TeamRuntimeResponse | None:
-        chat_id = int(message.chat.id)
+        chat_id = self._resolve_migrated_chat_id(int(message.chat.id))
         text = _message_text(message)
         attachments = await self._attachments_from_message(chat_id=chat_id, message=message)
         return await self.handle_text(
@@ -342,6 +345,7 @@ class TelegramTeamBridge:
         attachments_count: int = 0,
         attachments: tuple[TeamInputAttachment, ...] = (),
     ) -> TeamRuntimeResponse | None:
+        chat_id = self._resolve_migrated_chat_id(int(chat_id))
         if not self._chat_allowed(chat_id):
             await self._send(
                 TelegramOutgoingMessage(
@@ -451,6 +455,7 @@ class TelegramTeamBridge:
             self._watch_tasks.difference_update(tasks)
 
     async def _send(self, message: TelegramOutgoingMessage) -> None:
+        message = replace(message, chat_id=self._resolve_migrated_chat_id(message.chat_id))
         if message.send_typing and self.config.send_typing:
             await self._send_typing(message.chat_id)
         if message.channel == TeamMessageChannel.MAIN_CHAT and self.config.atmosphere.send_delays:
@@ -468,7 +473,14 @@ class TelegramTeamBridge:
                 send_typing=message.send_typing,
             )
             return
-        await self.bot.send_message(chat_id=message.chat_id, text=message.text)
+        await self._send_with_migration_retry(
+            chat_id=message.chat_id,
+            operation="send_message",
+            sender=lambda target_chat_id: self.bot.send_message(
+                chat_id=target_chat_id,
+                text=message.text,
+            ),
+        )
 
     async def _send_document(
         self,
@@ -477,6 +489,7 @@ class TelegramTeamBridge:
         path: Path,
         caption: str | None = None,
     ) -> None:
+        chat_id = self._resolve_migrated_chat_id(chat_id)
         if not path.exists() or not path.is_file():
             return
         send_document = getattr(self.bot, "send_document", None)
@@ -499,19 +512,176 @@ class TelegramTeamBridge:
         except Exception:
             document = path
 
-        result = send_document(chat_id=chat_id, document=document, caption=caption)
-        if asyncio.iscoroutine(result):
-            await result
+        await self._send_with_migration_retry(
+            chat_id=chat_id,
+            operation="send_document",
+            sender=lambda target_chat_id: send_document(
+                chat_id=target_chat_id,
+                document=document,
+                caption=caption,
+            ),
+        )
 
     async def _send_typing(self, chat_id: int) -> None:
+        chat_id = self._resolve_migrated_chat_id(chat_id)
         send_chat_action = getattr(self.bot, "send_chat_action", None)
         if send_chat_action is None:
             return
-        result = send_chat_action(chat_id=chat_id, action="typing")
+        await self._send_with_migration_retry(
+            chat_id=chat_id,
+            operation="send_chat_action",
+            sender=lambda target_chat_id: send_chat_action(
+                chat_id=target_chat_id,
+                action="typing",
+            ),
+        )
+
+    async def _send_with_migration_retry(
+        self,
+        *,
+        chat_id: int,
+        operation: str,
+        sender: Callable[[int], Any],
+    ) -> Any:
+        target_chat_id = self._resolve_migrated_chat_id(chat_id)
+        try:
+            return await self._await_if_needed(sender(target_chat_id))
+        except Exception as exc:
+            new_chat_id = self._migrate_to_chat_id(exc)
+            if new_chat_id is None:
+                raise
+
+        self._record_chat_migration(
+            old_chat_id=target_chat_id,
+            new_chat_id=new_chat_id,
+            operation=operation,
+        )
+        try:
+            return await self._await_if_needed(sender(new_chat_id))
+        except Exception as exc:
+            retry_chat_id = self._migrate_to_chat_id(exc)
+            if retry_chat_id is None:
+                raise
+            self._record_chat_migration(
+                old_chat_id=new_chat_id,
+                new_chat_id=retry_chat_id,
+                operation=operation,
+            )
+            logger.warning(
+                "Telegram chat migrated again during %s after one retry: %s -> %s",
+                operation,
+                new_chat_id,
+                retry_chat_id,
+            )
+            return None
+
+    async def _await_if_needed(self, result: Any) -> Any:
         if asyncio.iscoroutine(result):
-            await result
+            return await result
+        return result
+
+    def _migrate_to_chat_id(self, exc: Exception) -> int | None:
+        migrate_to_chat_id = getattr(exc, "migrate_to_chat_id", None)
+        if migrate_to_chat_id is None:
+            return None
+        try:
+            return int(migrate_to_chat_id)
+        except (TypeError, ValueError):
+            return None
+
+    def _record_chat_migration(
+        self,
+        *,
+        old_chat_id: int,
+        new_chat_id: int,
+        operation: str,
+    ) -> None:
+        old_chat_id = int(old_chat_id)
+        new_chat_id = int(new_chat_id)
+        if old_chat_id == new_chat_id:
+            return
+        new_chat_id = self._resolve_migrated_chat_id(new_chat_id)
+        self._migrated_chat_ids[old_chat_id] = new_chat_id
+        for source_chat_id, target_chat_id in tuple(self._migrated_chat_ids.items()):
+            if target_chat_id == old_chat_id:
+                self._migrated_chat_ids[source_chat_id] = new_chat_id
+
+        allowed_chat_ids = self.config.allowed_chat_ids
+        if (
+            allowed_chat_ids
+            and old_chat_id in allowed_chat_ids
+            and new_chat_id not in allowed_chat_ids
+        ):
+            allowed_chat_ids = (*allowed_chat_ids, new_chat_id)
+
+        log_chat_id = self.config.log_chat_id
+        if log_chat_id == old_chat_id:
+            log_chat_id = new_chat_id
+
+        if (
+            allowed_chat_ids != self.config.allowed_chat_ids
+            or log_chat_id != self.config.log_chat_id
+        ):
+            self.config = replace(
+                self.config,
+                allowed_chat_ids=allowed_chat_ids,
+                log_chat_id=log_chat_id,
+            )
+            self.registry.config = self.config
+
+        self._migrate_runtime_chat_state(old_chat_id=old_chat_id, new_chat_id=new_chat_id)
+        logger.warning(
+            "Telegram chat migrated during %s: %s -> %s",
+            operation,
+            old_chat_id,
+            new_chat_id,
+        )
+
+    def _migrate_runtime_chat_state(self, *, old_chat_id: int, new_chat_id: int) -> None:
+        session = self.registry.sessions.pop(old_chat_id, None)
+        if session is not None:
+            session.sink.chat_id = new_chat_id
+            if session.sink.session_id == str(old_chat_id):
+                session.sink.session_id = str(new_chat_id)
+            self.registry.sessions.setdefault(new_chat_id, session)
+
+        for existing_session in self.registry.sessions.values():
+            if existing_session.sink.chat_id == old_chat_id:
+                existing_session.sink.chat_id = new_chat_id
+            if existing_session.sink.log_chat_id == old_chat_id:
+                existing_session.sink.log_chat_id = new_chat_id
+            if existing_session.sink.session_id == str(old_chat_id):
+                existing_session.sink.session_id = str(new_chat_id)
+
+        self._migrate_job_session_ids(
+            old_session_id=str(old_chat_id), new_session_id=str(new_chat_id)
+        )
+
+    def _migrate_job_session_ids(self, *, old_session_id: str, new_session_id: str) -> None:
+        job_maps = (
+            self.jobs.active_jobs,
+            self.jobs.last_jobs,
+            self.jobs.last_completed_jobs,
+            self.jobs.last_failed_jobs,
+            self.jobs.last_cancelled_jobs,
+        )
+        for job_map in job_maps:
+            job = job_map.pop(old_session_id, None)
+            if job is None:
+                continue
+            job.session_id = new_session_id
+            job_map.setdefault(new_session_id, job)
+
+    def _resolve_migrated_chat_id(self, chat_id: int) -> int:
+        resolved_chat_id = int(chat_id)
+        seen: set[int] = set()
+        while resolved_chat_id in self._migrated_chat_ids and resolved_chat_id not in seen:
+            seen.add(resolved_chat_id)
+            resolved_chat_id = self._migrated_chat_ids[resolved_chat_id]
+        return resolved_chat_id
 
     def _chat_allowed(self, chat_id: int) -> bool:
+        chat_id = self._resolve_migrated_chat_id(chat_id)
         if self.config.allowed_chat_ids:
             return chat_id in self.config.allowed_chat_ids
         return self.config.environment.lower() in {"local", "dev", "development", "test"}
@@ -1105,7 +1275,7 @@ class TelegramTeamBridge:
         return snapshot.error_message
 
     def _session_id(self, chat_id: int) -> str:
-        return str(chat_id)
+        return str(self._resolve_migrated_chat_id(chat_id))
 
     def _response_text(self, response: TeamRuntimeResponse) -> str:
         lines = [response.user_visible_reply]

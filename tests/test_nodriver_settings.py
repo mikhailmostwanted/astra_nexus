@@ -85,5 +85,5 @@ def test_nodriver_window_settings_defaults_are_safe() -> None:
     assert settings.nodriver_window_height == 800
     assert settings.nodriver_window_x == 20
     assert settings.nodriver_window_y == 20
-    assert settings.nodriver_background_start is True
-    assert settings.nodriver_disable_focus_stealing is True
+    assert settings.nodriver_background_start is False
+    assert settings.nodriver_disable_focus_stealing is False

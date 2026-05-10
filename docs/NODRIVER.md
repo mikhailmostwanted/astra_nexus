@@ -17,8 +17,8 @@ NODRIVER_WINDOW_WIDTH=1100
 NODRIVER_WINDOW_HEIGHT=800
 NODRIVER_WINDOW_X=20
 NODRIVER_WINDOW_Y=20
-NODRIVER_BACKGROUND_START=true
-NODRIVER_DISABLE_FOCUS_STEALING=true
+NODRIVER_BACKGROUND_START=false
+NODRIVER_DISABLE_FOCUS_STEALING=false
 NODRIVER_CHATGPT_URL=https://chatgpt.com/
 NODRIVER_RESPONSE_TIMEOUT_SECONDS=180
 NODRIVER_PAGE_LOAD_TIMEOUT_SECONDS=60
@@ -45,16 +45,18 @@ NoDriver/Chrome.
 Это удобно для фоновых проверок, но на macOS/Chrome нельзя гарантировать полный запрет
 focus stealing: система всё равно может кратко активировать новое окно. Astra Nexus
 делает best-effort через размер/позицию окна и не включает headless без явной настройки.
-`NODRIVER_WINDOW_MODE=headless` включает headless только явно. Старый
-`NODRIVER_HEADLESS=true` тоже продолжает включать headless.
+`NODRIVER_WINDOW_MODE=headless` включает headless только явно для автоматических
+smoke/ask/provider запусков. Старый `NODRIVER_HEADLESS=true` тоже продолжает включать
+headless для автоматических запусков.
 Для `astra-nexus-nodriver-login`, `astra-nexus-nodriver-dom-probe` и
 `astra-nexus-nodriver-insert-probe` offscreen/headless window mode автоматически
-превращается в видимый small mode, если `NODRIVER_HEADLESS=true` не задан напрямую:
-ручной вход и debug-проверки должны оставаться удобными.
+превращается в видимый small mode: ручной вход и debug-проверки должны оставаться
+удобными.
 `NODRIVER_BACKGROUND_START` и `NODRIVER_DISABLE_FOCUS_STEALING` документируют желаемое
-поведение. В текущей реализации это безопасный best-effort, а не жёсткая гарантия
-macOS, потому что Chrome/NoDriver не дают надёжного cross-platform запрета на
-перехват фокуса при создании окна.
+поведение. На macOS эти режимы небезопасны как default: Chrome/NoDriver не дают
+надёжного cross-platform запрета на перехват фокуса при создании окна, а агрессивное
+фоновое окно может ломать подключение. Поэтому оба флага по умолчанию `false`; если
+включаешь их вручную, считай это best-effort, а не гарантией.
 `NODRIVER_START_TIMEOUT_SECONDS` передаётся в NoDriver, но сам NoDriver иногда
 возвращает `Failed to connect to browser` раньше этого timeout. Поэтому вокруг старта
 есть внешний retry-цикл: `NODRIVER_START_RETRIES` и
@@ -63,6 +65,11 @@ Nexus завершает только процесс, появившийся в 
 `NODRIVER_AFTER_TERMINATE_GRACE_SECONDS`, отпускает свой runtime lock и безопасно
 удаляет только `SingletonLock`, `SingletonSocket`, `SingletonCookie` и
 `DevToolsActivePort`, если профиль уже свободен.
+Если первая попытка упала на `Failed to connect to browser` с configured window args,
+следующая попытка автоматически включает fallback window mode. Для smoke/ask/provider
+это known-safe запуск без `--window-size` и `--window-position`; для login/debug
+контекстов остаётся видимое small-окно. В логах будет строка
+`NoDriver fallback window mode enabled`.
 
 ## Правильный порядок
 
