@@ -248,28 +248,6 @@ class ChatGPTClient:
                 reason=login_state.get("reason"),
             )
 
-        # Upload artifacts if provided in context
-        input_artifacts = debug_context.get("input_artifacts", [])
-        if input_artifacts:
-            self._log_stage("chatgpt.artifact.upload.started", debug_context)
-            uploader = ArtifactUploader(
-                tab,
-                workspace_path=Path(debug_context.get("workspace_path")) if debug_context.get("workspace_path") else None
-            )
-            success = await uploader.upload([Path(p) for p in input_artifacts])
-            if not success:
-                 self._log_stage("chatgpt.artifact.upload.failed", debug_context)
-                 # We don't raise here yet if upload failed but we want to be safe.
-                 # The user might want to continue or we might want to fail hard.
-                 # Based on requirements: "не отправлять prompt, если upload не прошёл"
-                 raise NoDriverProviderError(
-                     "Не удалось загрузить файлы артефактов.",
-                     stage="chatgpt.artifact.upload",
-                     url=await self.session.current_url(),
-                     page_title=await self.session.current_title(),
-                 )
-            self._log_stage("chatgpt.artifact.upload.ok", debug_context)
-
         wait_result = await self._submit_prompt_and_wait(
             tab,
             prompt=prompt,
@@ -311,6 +289,33 @@ class ChatGPTClient:
             await self._ensure_preferred_model(tab, debug_context)
         self._log_stage("chatgpt.prompt_box.search.started", debug_context)
         await self._wait_for_prompt_box(tab, debug_context, login_state or {})
+
+        # Upload artifacts if provided in context AFTER prompt box is confirmed
+        input_artifacts = debug_context.get("input_artifacts", [])
+        if input_artifacts:
+            self._log_stage("chatgpt.artifact.upload.started", debug_context)
+            uploader = ArtifactUploader(
+                tab,
+                workspace_path=Path(debug_context.get("workspace_path"))
+                if debug_context.get("workspace_path")
+                else None,
+            )
+            try:
+                success = await uploader.upload([Path(p) for p in input_artifacts])
+                if not success:
+                    raise NoDriverProviderError(
+                        "Не удалось подтвердить загрузку файлов артефактов.",
+                        stage="chatgpt.artifact.upload",
+                    )
+                self._log_stage("chatgpt.artifact.upload.ok", debug_context)
+            except NoDriverProviderError as exc:
+                self._log_stage(
+                    "chatgpt.artifact.upload.failed",
+                    debug_context,
+                    error_code=exc.error_code,
+                    message=str(exc),
+                )
+                raise
 
         self._log_stage("chatgpt.prompt.insert.started", debug_context)
         await self._fill_prompt(tab, prompt)

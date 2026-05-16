@@ -32,6 +32,18 @@ class NoDriverArtifactInputUploadFailedError(NoDriverProviderError):
     action = "Попробуй перезагрузить страницу или проверь формат файлов."
 
 
+class NoDriverArtifactInputUploadTimeoutError(NoDriverProviderError):
+    status = "artifact_input_upload_timeout"
+    user_message = "Истекло время ожидания подтверждения загрузки файлов."
+    action = "Проверь скорость соединения или попробуй уменьшить размер файлов."
+
+
+class NoDriverArtifactInputUploadFilenameMismatchError(NoDriverProviderError):
+    status = "artifact_input_upload_filename_mismatch"
+    user_message = "Загруженный файл не соответствует ожидаемому имени."
+    action = "Убедись, что файлы не повреждены и имеют корректные расширения."
+
+
 class ArtifactUploader:
     def __init__(self, tab: Any, workspace_path: Path | None = None) -> None:
         self.tab = tab
@@ -48,12 +60,11 @@ class ArtifactUploader:
         self.debug_data["timestamp"] = datetime.now(UTC).isoformat()
         self.debug_data["files_to_upload"] = [str(p) for p in file_paths]
 
-        # 1. Поиск composer root и кнопки загрузки
+        # 1. Поиск composer и элементов загрузки
         probe_result = await self._probe_upload_elements()
         self.debug_data["initial_probe"] = probe_result
 
         if not probe_result.get("composer_found"):
-            # Сохраняем расширенный дебаг перед ошибкой
             await self._dump_debug_info("artifact_input_upload_failed_no_composer")
             raise NoDriverArtifactInputPromptBoxNotFoundError(details=probe_result)
 
@@ -71,9 +82,8 @@ class ArtifactUploader:
         if attach_button_selector:
             logger.info(f"Clicking attach button: {attach_button_selector}")
             await self._click_selector(attach_button_selector)
-            await asyncio.sleep(1.5)  # Ждем появления меню или инпута
+            await asyncio.sleep(1.5)
 
-            # Повторный поиск после клика
             probe_after_click = await self._probe_upload_elements()
             self.debug_data["probe_after_attach_click"] = probe_after_click
 
@@ -84,7 +94,6 @@ class ArtifactUploader:
                     await self._dump_debug_info("artifact_input_upload_success_after_click")
                     return True
 
-            # Поиск в меню
             menu_upload_selector = probe_after_click.get("menu_upload_selector")
             if menu_upload_selector:
                 logger.info(f"Clicking menu upload item: {menu_upload_selector}")
@@ -104,6 +113,11 @@ class ArtifactUploader:
         if not attach_button_selector:
             raise NoDriverArtifactInputUploadButtonNotFoundError(details=probe_result)
 
+        # Если дошли сюда, значит кнопка была, но загрузка не удалась или не подтвердилась
+        result = self.debug_data.get("upload_result", {})
+        if result.get("status") == "timeout":
+            raise NoDriverArtifactInputUploadTimeoutError(details=self.debug_data)
+
         raise NoDriverArtifactInputUploadFailedError(details=self.debug_data)
 
     async def _handle_file_input(self, selector: str, file_paths: list[Path]) -> bool:
@@ -114,14 +128,26 @@ class ArtifactUploader:
 
                 # Ждем подтверждения загрузки (появления чипа с именем файла)
                 filenames = [p.name for p in file_paths]
-                deadline = asyncio.get_running_loop().time() + 10.0
+                deadline = asyncio.get_running_loop().time() + 15.0
                 while asyncio.get_running_loop().time() < deadline:
                     probe = await self._probe_upload_status(filenames)
                     if probe.get("upload_confirmed"):
+                        if not probe.get("all_files_matched"):
+                            self.debug_data["upload_result"] = {
+                                "status": "mismatch",
+                                "error": "Some files were not found in chips",
+                                "found": probe.get("found_in_chips"),
+                            }
+                            # Мы можем либо упасть, либо считать это частичным успехом.
+                            # Для безопасности упадем.
+                            raise NoDriverArtifactInputUploadFilenameMismatchError(
+                                details=self.debug_data
+                            )
+
                         self.debug_data["upload_result"] = {
                             "status": "success",
                             "selector": selector,
-                            "confirmed_files": probe.get("found_files"),
+                            "confirmed_files": probe.get("found_in_chips"),
                         }
                         return True
                     await asyncio.sleep(0.5)
@@ -131,6 +157,8 @@ class ArtifactUploader:
                     "error": "Upload confirmation timeout",
                     "selector": selector,
                 }
+        except NoDriverProviderError:
+            raise
         except Exception as e:
             logger.error(f"Failed to upload via {selector}: {e}")
             self.debug_data["upload_result"] = {
@@ -145,17 +173,16 @@ class ArtifactUploader:
         script = f"""
         (() => {{
             const filenames = {filenames_json};
-            const text = document.body.innerText.toLowerCase();
-            const found_files = filenames.filter(f => text.includes(f.toLowerCase()));
 
-            // Также ищем специфичные для ChatGPT элементы (чипы файлов)
+            // Ищем чипы файлов по специфичным для ChatGPT атрибутам
             const chips = Array.from(document.querySelectorAll('[data-testid*="file-chip"], [aria-label*="file"]'));
             const chipTexts = chips.map(c => (c.innerText || c.ariaLabel || "").toLowerCase());
+
             const found_in_chips = filenames.filter(f => chipTexts.some(t => t.includes(f.toLowerCase())));
 
             return {{
-                upload_confirmed: found_files.length > 0 || found_in_chips.length > 0,
-                found_files: found_files,
+                upload_confirmed: found_in_chips.length > 0,
+                all_files_matched: found_in_chips.length === filenames.length,
                 found_in_chips: found_in_chips
             }};
         }})()
@@ -195,9 +222,8 @@ class ArtifactUploader:
                 }}
             }}
 
-            if (!composer) return {{ composer_found: false }};
+            if (!composer || composer === document.body) return {{ composer_found: false }};
 
-            // Ищем ближайший контейнер (composer root), чтобы не считать document.body корнем
             let composerRoot = composer.closest('[data-testid="composer-root"], .composer-parent, form, div[role="presentation"]');
             if (!composerRoot || composerRoot === document.body) {{
                 composerRoot = composer.parentElement;
@@ -206,15 +232,16 @@ class ArtifactUploader:
             const fileInputs = Array.from(document.querySelectorAll('input[type="file"]'));
             const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
 
+            function escapeSelector(val) {{
+                return val.replace(/'/g, "\\\\'");
+            }}
+
             // Ищем кнопку "+" или "Attach"
             const attachButton = buttons.find(b => {{
                 const text = (b.innerText || b.ariaLabel || "").toLowerCase();
-                const hasAttachIcon = b.querySelector('svg') && (
-                    b.innerHTML.includes('plus') ||
-                    b.innerHTML.includes('attach') ||
-                    b.getAttribute('data-testid')?.includes('attach')
-                );
-                return isVisible(b) && (text.includes("attach") || text.includes("upload") || hasAttachIcon);
+                const hasAttachId = b.getAttribute('data-testid')?.includes('attach');
+                const hasAttachAria = b.ariaLabel?.toLowerCase().includes('attach');
+                return isVisible(b) && (text.includes("attach") || text.includes("upload") || hasAttachId || hasAttachAria);
             }});
 
             const menuUploadItem = buttons.find(b => {{
@@ -222,14 +249,32 @@ class ArtifactUploader:
                 return isVisible(b) && (text.includes("file") || text.includes("computer"));
             }});
 
+            let attach_selector = null;
+            if (attachButton) {{
+                const testid = attachButton.getAttribute('data-testid');
+                if (testid) {{
+                    attach_selector = 'button[data-testid="' + escapeSelector(testid) + '"]';
+                }} else if (attachButton.ariaLabel) {{
+                    attach_selector = 'button[aria-label="' + escapeSelector(attachButton.ariaLabel) + '"]';
+                }}
+            }}
+
+            let menu_selector = null;
+            if (menuUploadItem) {{
+                 const testid = menuUploadItem.getAttribute('data-testid');
+                 if (testid) {{
+                    menu_selector = 'button[data-testid="' + escapeSelector(testid) + '"]';
+                 }}
+            }}
+
             return {{
                 composer_found: true,
                 composer_tag: composer.tagName,
                 composer_root_tag: composerRoot ? composerRoot.tagName : null,
-                composer_root_html: composerRoot ? composerRoot.outerHTML : null,
+                composer_root_html: (composerRoot && composerRoot !== document.body) ? composerRoot.outerHTML : null,
                 file_input_selector: fileInputs.length > 0 ? "input[type='file']" : null,
-                attach_button_selector: attachButton ? (attachButton.getAttribute('data-testid') ? 'button[data-testid="' + attachButton.getAttribute('data-testid') + '"]' : (attachButton.ariaLabel ? "button[aria-label='" + attachButton.ariaLabel + "']" : null)) : null,
-                menu_upload_selector: menuUploadItem ? (menuUploadItem.getAttribute('data-testid') ? 'button[data-testid="' + menuUploadItem.getAttribute('data-testid') + '"]' : null) : null,
+                attach_button_selector: attach_selector,
+                menu_upload_selector: menu_selector,
                 all_file_inputs: fileInputs.map(i => ({{ id: i.id, className: i.className }})),
                 all_buttons: buttons.filter(isVisible).map(b => ({{ text: b.innerText, aria: b.ariaLabel, testid: b.getAttribute('data-testid') }}))
             }};
@@ -244,14 +289,12 @@ class ArtifactUploader:
         debug_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            # Page info
             (debug_dir / "page_url.txt").write_text(await self.tab.url, encoding="utf-8")
             (debug_dir / "page_title.txt").write_text(await self.tab.title, encoding="utf-8")
             (debug_dir / "document_ready_state.txt").write_text(
                 str(await self.tab.evaluate("document.readyState")), encoding="utf-8"
             )
 
-            # HTML
             html = await self.tab.get_content()
             (debug_dir / "full_page_before_upload.html").write_text(html, encoding="utf-8")
 
@@ -261,8 +304,6 @@ class ArtifactUploader:
                     probe["composer_root_html"], encoding="utf-8"
                 )
 
-            # JSONs
-            probe = self.debug_data.get("initial_probe", {})
             (debug_dir / "all_buttons_before_upload.json").write_text(
                 json.dumps(probe.get("all_buttons", []), indent=2, ensure_ascii=False),
                 encoding="utf-8",
@@ -272,7 +313,6 @@ class ArtifactUploader:
                 encoding="utf-8",
             )
 
-            # Near composer buttons (can be same as all buttons in our simple probe for now)
             (debug_dir / "near_composer_buttons.json").write_text(
                 json.dumps(probe.get("all_buttons", []), indent=2, ensure_ascii=False),
                 encoding="utf-8",
