@@ -144,8 +144,11 @@ class AsyncTeamOrchestrator:
         *,
         attachments: Sequence[TeamInputAttachment] = (),
         runtime_metadata: dict[str, Any] | None = None,
+        intent: str | None = None,
     ) -> TeamRunOutcome:
         team_run = TeamRun(user_task=user_task, attachments=list(attachments))
+        if intent:
+            team_run.runtime_metadata["intent"] = intent
         if runtime_metadata:
             team_run.runtime_metadata.update(
                 {key: value for key, value in runtime_metadata.items() if value is not None}
@@ -227,7 +230,7 @@ class AsyncTeamOrchestrator:
         )
 
     def _assign_execution_plan(self, team_run: TeamRun) -> None:
-        plan = self._effective_execution_plan()
+        plan = self._effective_execution_plan(team_run)
         team_run.execution_mode = plan.mode
         team_run.execution_plan = plan
 
@@ -243,12 +246,14 @@ class AsyncTeamOrchestrator:
                 build_quality_criteria(source_agent=AgentRole.COORDINATOR)
             )
 
-    def _effective_execution_plan(self) -> TeamExecutionPlan:
+    def _effective_execution_plan(self, team_run: TeamRun | None = None) -> TeamExecutionPlan:
+        intent = team_run.runtime_metadata.get("intent") if team_run else None
         requested = self.requested_execution_plan or execution_plan_for_mode(
             self.requested_execution_mode,
             pipeline=self.pipeline,
             max_parallel_agents=self.max_parallel_agents,
             parallel_agent_timeout_seconds=self.parallel_agent_timeout_seconds,
+            intent=intent,
         )
         requested = requested.with_limits(
             max_parallel_agents=self.max_parallel_agents,
@@ -601,7 +606,17 @@ class AsyncTeamOrchestrator:
             ),
         )
         prompt.metadata.update(self._requested_file_prompt_metadata(team_run, profile=profile))
+        prompt.metadata.update(self._input_artifacts_metadata(team_run))
         return prompt
+
+    def _input_artifacts_metadata(self, team_run: TeamRun) -> dict[str, Any]:
+        if not team_run.attachments:
+            return {}
+        return {
+            "input_artifacts": [
+                str(a.local_path) for a in team_run.attachments if a.local_path
+            ]
+        }
 
     def _requested_file_extra_instructions(
         self,

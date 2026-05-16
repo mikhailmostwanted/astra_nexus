@@ -43,6 +43,7 @@ from astra_nexus.team.runtime import (
 from astra_nexus.team.telegram_render import (
     TELEGRAM_HTML_PARSE_MODE,
     TELEGRAM_INTERNAL_CHUNK_LIMIT,
+    LogCardRenderer,
     TelegramRenderedChunk,
     render_answer_for_telegram,
     split_plain_text,
@@ -219,6 +220,11 @@ class TelegramTeamMessageSink(TeamMessageSink):
                 self.job_update_callback(self, message)
             except Exception:
                 logger.warning("Could not update Telegram team job state", exc_info=True)
+
+        # Deduplication for status messages in main chat
+        if message.channel == TeamMessageChannel.MAIN_CHAT and self._is_duplicate_status(message):
+            return
+
         if message.channel in {TeamMessageChannel.LOG_CHAT, TeamMessageChannel.DEBUG}:
             if self.log_chat_id is None:
                 return
@@ -280,6 +286,11 @@ class TelegramTeamMessageSink(TeamMessageSink):
         return f"[{author}] {message.text}"
 
     def _render_log(self, message: TeamMessage) -> str:
+        # Use LogCardRenderer if metadata suggests it's an event
+        if message.metadata.get("event_type"):
+            renderer = LogCardRenderer()
+            return renderer.render_event(message)
+
         details = []
         for key, value in (
             ("event_type", message.metadata.get("event_type")),
@@ -327,6 +338,25 @@ class TelegramTeamMessageSink(TeamMessageSink):
         if key in self._main_dedupe_keys:
             return True
         self._main_dedupe_keys.add(key)
+        return False
+
+    def _is_duplicate_status(self, message: TeamMessage) -> bool:
+        if message.type.value != "event":
+            return False
+
+        event_type = message.metadata.get("event_type")
+        if event_type not in {"agent_started", "agent_finished", "run_started"}:
+            return False
+
+        role = message.metadata.get("role") or ""
+        key = (message.run_id, event_type, role)
+
+        if not hasattr(self, "_status_keys"):
+            self._status_keys = set()
+
+        if key in self._status_keys:
+            return True
+        self._status_keys.add(key)
         return False
 
 
@@ -553,6 +583,10 @@ class TelegramTeamBridge:
             )
 
     async def _send_one(self, message: TelegramOutgoingMessage) -> None:
+        if message.channel == TeamMessageChannel.LOG_CHAT:
+             # Force HTML for Log Cards
+             message = replace(message, parse_mode=TELEGRAM_HTML_PARSE_MODE)
+
         if message.send_typing and self.config.send_typing:
             await self._send_typing(message.chat_id)
         if message.channel == TeamMessageChannel.MAIN_CHAT and self.config.atmosphere.send_delays:
@@ -1253,20 +1287,27 @@ class TelegramTeamBridge:
         workspace = snapshot.workspace_path or "нет"
         if snapshot.status in {TeamJobStatus.PENDING, TeamJobStatus.RUNNING}:
             lines = [
-                "Активная задача: есть.",
-                "Кто работает: команда.",
-                f"job_id: {snapshot.job_id}",
-                f"run_id: {run}",
-                f"provider: {self.config.provider}",
-                f"started_at: {_datetime_text(snapshot.started_at)}",
-                f"status: {snapshot.status.value}",
-                f"workspace: {workspace}",
+                "🚀 Активная задача в процессе.",
+                f"📋 <b>Run ID:</b> <code>{run}</code>",
+                f"🛠 <b>Провайдер:</b> {self.config.provider}",
+                f"🕒 <b>Запущено:</b> {_datetime_text(snapshot.started_at)}",
+                f"🔄 <b>Статус:</b> {snapshot.status.value}",
             ]
             if snapshot.current_agent:
-                lines.append(f"current_agent: {snapshot.current_agent}")
+                lines.append(f"👤 <b>Агент:</b> {snapshot.current_agent}")
             if snapshot.current_stage:
-                lines.append(f"current_stage: {snapshot.current_stage}")
-            lines.append("Последний результат: пока нет.")
+                lines.append(f"📍 <b>Этап:</b> {snapshot.current_stage}")
+
+            # Добавляем информацию о режиме, если она есть
+            payload = self._workspace_run_payload(snapshot.workspace_path)
+            intent = payload.get("runtime_metadata", {}).get("intent") if payload else None
+            if intent:
+                lines.append(f"🎯 <b>Режим:</b> {intent}")
+
+            if workspace != "нет":
+                lines.append(f"📂 <b>Workspace:</b> <code>{workspace}</code>")
+
+            lines.append("\nКоманда работает над результатом...")
             return "\n".join(lines)
         if snapshot.status == TeamJobStatus.COMPLETED:
             return "\n".join(

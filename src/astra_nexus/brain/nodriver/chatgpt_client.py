@@ -14,6 +14,7 @@ from astra_nexus.brain.nodriver.artifact_detector import (
     artifact_detection_from_probe_payload,
     build_artifact_detector_probe_script,
 )
+from astra_nexus.brain.nodriver.artifact_uploader import ArtifactUploader
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
 from astra_nexus.brain.nodriver.dom_probe import (
     LOGIN_STATE_PROBE_SCRIPT,
@@ -60,6 +61,8 @@ class ResponseWaitState(StrEnum):
     ASSISTANT_SEGMENT_SEEN = "assistant_segment_seen"
     THINKING_OR_STREAMING = "thinking_or_streaming"
     INTERMEDIATE_RESPONSE_SEEN = "intermediate_response_seen"
+    THINKING = "thinking"
+    WRITING = "writing"
     WAITING_FOR_FINAL_IDLE = "waiting_for_final_idle"
     FINAL_RESPONSE_READY = "final_response_ready"
     FAILED = "failed"
@@ -244,6 +247,28 @@ class ChatGPTClient:
                 debug_context,
                 reason=login_state.get("reason"),
             )
+
+        # Upload artifacts if provided in context
+        input_artifacts = debug_context.get("input_artifacts", [])
+        if input_artifacts:
+            self._log_stage("chatgpt.artifact.upload.started", debug_context)
+            uploader = ArtifactUploader(
+                tab,
+                workspace_path=Path(debug_context.get("workspace_path")) if debug_context.get("workspace_path") else None
+            )
+            success = await uploader.upload([Path(p) for p in input_artifacts])
+            if not success:
+                 self._log_stage("chatgpt.artifact.upload.failed", debug_context)
+                 # We don't raise here yet if upload failed but we want to be safe.
+                 # The user might want to continue or we might want to fail hard.
+                 # Based on requirements: "не отправлять prompt, если upload не прошёл"
+                 raise NoDriverProviderError(
+                     "Не удалось загрузить файлы артефактов.",
+                     stage="chatgpt.artifact.upload",
+                     url=await self.session.current_url(),
+                     page_title=await self.session.current_title(),
+                 )
+            self._log_stage("chatgpt.artifact.upload.ok", debug_context)
 
         wait_result = await self._submit_prompt_and_wait(
             tab,
@@ -1633,6 +1658,8 @@ class ChatGPTClient:
         segments: list[str],
     ) -> ResponseWaitState:
         if not segments:
+            if snapshot.thinking_indicators_count > 0:
+                return ResponseWaitState.THINKING
             if (
                 snapshot.is_generating
                 or snapshot.stop_button_visible
@@ -1640,9 +1667,13 @@ class ChatGPTClient:
             ):
                 return ResponseWaitState.GENERATION_STARTED
             return ResponseWaitState.PROMPT_SUBMITTED
+        if snapshot.thinking_indicators_count > 0:
+            return ResponseWaitState.THINKING
+        if snapshot.streaming_indicators_count > 0 or snapshot.is_generating:
+            return ResponseWaitState.WRITING
         if len(segments) > 1:
             return ResponseWaitState.INTERMEDIATE_RESPONSE_SEEN
-        if snapshot.is_generating or snapshot.stop_button_visible or snapshot.visible_indicators:
+        if snapshot.stop_button_visible or snapshot.visible_indicators:
             return ResponseWaitState.THINKING_OR_STREAMING
         return ResponseWaitState.ASSISTANT_SEGMENT_SEEN
 

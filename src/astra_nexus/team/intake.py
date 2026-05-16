@@ -16,10 +16,15 @@ from astra_nexus.team.workspace import TeamRunWorkspace
 
 class TeamInputIntent(StrEnum):
     CASUAL_CHAT = "casual_chat"
+    SIMPLE_ANSWER = "simple_answer"
+    TEAM_STANDARD = "team_standard"
+    TEAM_DEEP = "team_deep"
     NEW_TASK = "new_task"
     TASK_FOLLOWUP = "task_followup"
     REVISE_PREVIOUS_RESULT = "revise_previous_result"
     FILE_TASK = "file_task"
+    FILE_GENERATION = "file_generation"
+    DEBUG_MODE = "debug_mode"
     STATUS_REQUEST = "status_request"
     RUNS_REQUEST = "runs_request"
     HEALTH_REQUEST = "health_request"
@@ -220,6 +225,15 @@ class TeamIntakeRouter:
             team_input = TeamInput(text=team_input)
 
         text = team_input.normalized_text
+
+        if "/debug" in text:
+            return self._decision(
+                TeamInputIntent.DEBUG_MODE,
+                0.95,
+                "explicit debug mode requested",
+                "Включаю режим глубокой диагностики.",
+                should_start_run=True,
+            )
         if not text and team_input.attachments_count <= 0:
             return self._decision(
                 TeamInputIntent.EMPTY_INPUT,
@@ -276,9 +290,9 @@ class TeamIntakeRouter:
             if text and self._looks_like_new_task(text):
                 return self._decision(
                     TeamInputIntent.FILE_TASK,
-                    0.88,
+                    0.95,
                     "attachments with task text",
-                    "Вижу файл и задачу. Запускаю команду.",
+                    "Вижу файл и задачу. Запускаю обработку.",
                     should_start_run=True,
                 )
             return self._decision(
@@ -313,21 +327,43 @@ class TeamIntakeRouter:
                 "Понял, это правка предыдущего результата.",
                 target_run_id=team_input.last_run_id,
             )
-        if self._looks_like_new_task(text):
+        if team_input.output_requested_as_file:
             return self._decision(
-                TeamInputIntent.NEW_TASK,
+                TeamInputIntent.FILE_GENERATION,
+                0.90,
+                "file generation requested",
+                f"Принял задачу на генерацию файла ({team_input.requested_output_format}).",
+                should_start_run=True,
+            )
+
+        if self._looks_like_new_task(text):
+            intent = TeamInputIntent.TEAM_STANDARD
+            if any(word in text for word in ("подробно", "детально", "глубоко", "deep")):
+                intent = TeamInputIntent.TEAM_DEEP
+
+            return self._decision(
+                intent,
                 0.88,
                 "task verb or long task-like text detected",
                 "Понял задачу. Запускаю команду.",
                 should_start_run=True,
             )
         if text:
-            return self._decision(
-                TeamInputIntent.CASUAL_CHAT,
-                0.72,
-                "short message without task markers",
-                "Босс, я на связи. Можем спокойно обсудить или сразу превратить мысль в задачу.",
-            )
+            if len(text.split()) < 5:
+                return self._decision(
+                    TeamInputIntent.CASUAL_CHAT,
+                    0.72,
+                    "short message without task markers",
+                    "Босс, я на связи. Можем спокойно обсудить или сразу превратить мысль в задачу.",
+                )
+            else:
+                return self._decision(
+                    TeamInputIntent.SIMPLE_ANSWER,
+                    0.75,
+                    "medium length message without task markers",
+                    "Принял. Сейчас отвечу.",
+                    should_start_run=True,
+                )
         return self._decision(
             TeamInputIntent.UNKNOWN,
             0.3,
@@ -396,6 +432,7 @@ class TeamConversationController:
             outcome = await orchestrator.run(
                 team_input.text.strip(),
                 attachments=team_input.attachments,
+                intent=decision.intent.value,
             )
             self.runs.append(outcome.run)
             workspace_path = self.workspace.save(outcome.run) if self.workspace else None

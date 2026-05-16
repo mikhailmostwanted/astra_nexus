@@ -141,6 +141,12 @@ class NoDriverPromptBoxNotFoundError(NoDriverSelectorNotFoundError):
     )
 
 
+class NoDriverArtifactInputPromptBoxNotFoundError(NoDriverProviderError):
+    status = "artifact_input_prompt_box_not_found"
+    user_message = "Поле ввода ChatGPT (composer) не найдено для загрузки артефакта."
+    action = "Проверь, что ChatGPT открыт и интерфейс загрузки доступен."
+
+
 class NoDriverChatGPTUINotReadyError(NoDriverPromptBoxNotFoundError):
     status = "chatgpt_ui_not_ready"
     user_message = "интерфейс ChatGPT Web не готов"
