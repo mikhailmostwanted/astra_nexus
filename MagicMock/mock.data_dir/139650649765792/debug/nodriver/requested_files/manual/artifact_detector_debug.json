@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-05-16T20:23:35.226553+00:00",
+  "attempts": [
+    {
+      "attempt_number": 1,
+      "detector": "<MagicMock name='_detect_requested_file_artifacts().as_dict()' id='139650651089728'>"
+    },
+    {
+      "attempt_number": 2,
+      "detector": "<MagicMock name='_detect_requested_file_artifacts().as_dict()' id='139650651089728'>"
+    }
+  ],
+  "latest": {
+    "attempt_number": 2,
+    "detector": "<MagicMock name='_detect_requested_file_artifacts().as_dict()' id='139650651089728'>"
+  }
+}

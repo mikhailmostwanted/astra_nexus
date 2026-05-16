@@ -354,7 +354,8 @@ class TeamIntakeRouter:
                     TeamInputIntent.CASUAL_CHAT,
                     0.72,
                     "short message without task markers",
-                    "Босс, я на связи. Можем спокойно обсудить или сразу превратить мысль в задачу.",
+                    "Босс, я на связи. "
+                    "Можем спокойно обсудить или сразу превратить мысль в задачу.",
                 )
             else:
                 return self._decision(

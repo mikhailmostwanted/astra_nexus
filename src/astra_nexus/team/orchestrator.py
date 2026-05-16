@@ -606,16 +606,28 @@ class AsyncTeamOrchestrator:
             ),
         )
         prompt.metadata.update(self._requested_file_prompt_metadata(team_run, profile=profile))
-        prompt.metadata.update(self._input_artifacts_metadata(team_run))
+        prompt.metadata.update(self._input_artifacts_metadata(team_run, profile=profile))
+        prompt.metadata.update({"intent": team_run.runtime_metadata.get("intent")})
         return prompt
 
-    def _input_artifacts_metadata(self, team_run: TeamRun) -> dict[str, Any]:
+    def _input_artifacts_metadata(
+        self, team_run: TeamRun, *, profile: AgentProfile
+    ) -> dict[str, Any]:
         if not team_run.attachments:
             return {}
+
+        # Only enable upload for first analyst or if intent is file_task/generation
+        # Or if explicitly requested in runtime metadata
+        intent = team_run.runtime_metadata.get("intent")
+        artifact_upload_enabled = (
+            profile.role == AgentRole.ANALYST
+            or intent in {"file_task", "file_generation"}
+            or team_run.runtime_metadata.get("artifact_upload_enabled")
+        )
+
         return {
-            "input_artifacts": [
-                str(a.local_path) for a in team_run.attachments if a.local_path
-            ]
+            "input_artifacts": [str(a.local_path) for a in team_run.attachments if a.local_path],
+            "artifact_upload_enabled": artifact_upload_enabled,
         }
 
     def _requested_file_extra_instructions(

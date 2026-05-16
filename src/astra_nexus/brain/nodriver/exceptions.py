@@ -147,6 +147,30 @@ class NoDriverArtifactInputPromptBoxNotFoundError(NoDriverProviderError):
     action = "Проверь, что ChatGPT открыт и интерфейс загрузки доступен."
 
 
+class NoDriverArtifactInputUploadButtonNotFoundError(NoDriverProviderError):
+    status = "artifact_input_upload_button_not_found"
+    user_message = "Кнопка загрузки файлов не найдена в интерфейсе ChatGPT."
+    action = "Проверь, доступна ли загрузка файлов в твоем аккаунте ChatGPT."
+
+
+class NoDriverArtifactInputUploadFailedError(NoDriverProviderError):
+    status = "artifact_input_upload_failed"
+    user_message = "Не удалось завершить загрузку файлов в ChatGPT."
+    action = "Попробуй перезагрузить страницу или проверь формат файлов."
+
+
+class NoDriverArtifactInputUploadTimeoutError(NoDriverProviderError):
+    status = "artifact_input_upload_timeout"
+    user_message = "Истекло время ожидания подтверждения загрузки файлов."
+    action = "Проверь скорость соединения или попробуй уменьшить размер файлов."
+
+
+class NoDriverArtifactInputUploadFilenameMismatchError(NoDriverProviderError):
+    status = "artifact_input_upload_filename_mismatch"
+    user_message = "Загруженный файл не соответствует ожидаемому имени."
+    action = "Убедись, что файлы не повреждены и имеют корректные расширения."
+
+
 class NoDriverChatGPTUINotReadyError(NoDriverPromptBoxNotFoundError):
     status = "chatgpt_ui_not_ready"
     user_message = "интерфейс ChatGPT Web не готов"

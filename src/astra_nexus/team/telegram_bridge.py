@@ -584,8 +584,8 @@ class TelegramTeamBridge:
 
     async def _send_one(self, message: TelegramOutgoingMessage) -> None:
         if message.channel == TeamMessageChannel.LOG_CHAT:
-             # Force HTML for Log Cards
-             message = replace(message, parse_mode=TELEGRAM_HTML_PARSE_MODE)
+            # Force HTML for Log Cards
+            message = replace(message, parse_mode=TELEGRAM_HTML_PARSE_MODE)
 
         if message.send_typing and self.config.send_typing:
             await self._send_typing(message.chat_id)

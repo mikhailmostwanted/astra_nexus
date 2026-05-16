@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from datetime import UTC, datetime
@@ -8,40 +9,17 @@ from pathlib import Path
 from typing import Any
 
 from astra_nexus.brain.nodriver.dom_probe import evaluate_script
-from astra_nexus.brain.nodriver.exceptions import NoDriverProviderError
+from astra_nexus.brain.nodriver.exceptions import (
+    NoDriverArtifactInputPromptBoxNotFoundError,
+    NoDriverArtifactInputUploadButtonNotFoundError,
+    NoDriverArtifactInputUploadFailedError,
+    NoDriverArtifactInputUploadFilenameMismatchError,
+    NoDriverArtifactInputUploadTimeoutError,
+    NoDriverProviderError,
+)
 from astra_nexus.brain.nodriver.selectors import PROMPT_INPUT_SELECTORS
 
 logger = logging.getLogger(__name__)
-
-
-class NoDriverArtifactInputPromptBoxNotFoundError(NoDriverProviderError):
-    status = "artifact_input_prompt_box_not_found"
-    user_message = "Поле ввода ChatGPT (composer) не найдено для загрузки артефакта."
-    action = "Проверь, что ChatGPT открыт и интерфейс загрузки доступен."
-
-
-class NoDriverArtifactInputUploadButtonNotFoundError(NoDriverProviderError):
-    status = "artifact_input_upload_button_not_found"
-    user_message = "Кнопка загрузки файлов не найдена в интерфейсе ChatGPT."
-    action = "Проверь, доступна ли загрузка файлов в твоем аккаунте ChatGPT."
-
-
-class NoDriverArtifactInputUploadFailedError(NoDriverProviderError):
-    status = "artifact_input_upload_failed"
-    user_message = "Не удалось завершить загрузку файлов в ChatGPT."
-    action = "Попробуй перезагрузить страницу или проверь формат файлов."
-
-
-class NoDriverArtifactInputUploadTimeoutError(NoDriverProviderError):
-    status = "artifact_input_upload_timeout"
-    user_message = "Истекло время ожидания подтверждения загрузки файлов."
-    action = "Проверь скорость соединения или попробуй уменьшить размер файлов."
-
-
-class NoDriverArtifactInputUploadFilenameMismatchError(NoDriverProviderError):
-    status = "artifact_input_upload_filename_mismatch"
-    user_message = "Загруженный файл не соответствует ожидаемому имени."
-    action = "Убедись, что файлы не повреждены и имеют корректные расширения."
 
 
 class ArtifactUploader:
@@ -174,11 +152,32 @@ class ArtifactUploader:
         (() => {{
             const filenames = {filenames_json};
 
-            // Ищем чипы файлов по специфичным для ChatGPT атрибутам
-            const chips = Array.from(document.querySelectorAll('[data-testid*="file-chip"], [aria-label*="file"]'));
-            const chipTexts = chips.map(c => (c.innerText || c.ariaLabel || "").toLowerCase());
+            function looksLikeFile(el, name) {{
+                const text = (el.innerText || el.textContent || "").toLowerCase();
+                const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+                const title = (el.getAttribute("title") || "").toLowerCase();
+                const testid = (el.getAttribute("data-testid") || "").toLowerCase();
+                const search = name.toLowerCase();
+                return (
+                    text.includes(search) ||
+                    aria.includes(search) ||
+                    title.includes(search) ||
+                    testid.includes(search)
+                );
+            }}
 
-            const found_in_chips = filenames.filter(f => chipTexts.some(t => t.includes(f.toLowerCase())));
+            const chips = Array.from(document.querySelectorAll([
+                '[data-testid*="file"]',
+                '[data-testid*="chip"]',
+                '[aria-label*="file"]',
+                '[aria-label*="attachment"]',
+                '.file-card',
+                '.attachment'
+            ].join(",")));
+
+            const found_in_chips = filenames.filter(name =>
+                chips.some(chip => looksLikeFile(chip, name))
+            );
 
             return {{
                 upload_confirmed: found_in_chips.length > 0,
@@ -210,7 +209,11 @@ class ArtifactUploader:
             function isVisible(el) {{
                 if (!el) return false;
                 const rect = el.getBoundingClientRect();
-                return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).display !== 'none';
+                return (
+                    rect.width > 0 &&
+                    rect.height > 0 &&
+                    window.getComputedStyle(el).display !== 'none'
+                );
             }}
 
             let composer = null;
@@ -224,7 +227,9 @@ class ArtifactUploader:
 
             if (!composer || composer === document.body) return {{ composer_found: false }};
 
-            let composerRoot = composer.closest('[data-testid="composer-root"], .composer-parent, form, div[role="presentation"]');
+            let composerRoot = composer.closest(
+                '[data-testid="composer-root"], .composer-parent, form, div[role="presentation"]'
+            );
             if (!composerRoot || composerRoot === document.body) {{
                 composerRoot = composer.parentElement;
             }}
@@ -233,15 +238,27 @@ class ArtifactUploader:
             const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
 
             function escapeSelector(val) {{
-                return val.replace(/'/g, "\\\\'");
+                return val.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            }}
+
+            function escapeValue(val) {{
+                return val.replace(/"/g, '&quot;').replace(/'/g, '&apos;');
             }}
 
             // Ищем кнопку "+" или "Attach"
             const attachButton = buttons.find(b => {{
                 const text = (b.innerText || b.ariaLabel || "").toLowerCase();
                 const hasAttachId = b.getAttribute('data-testid')?.includes('attach');
-                const hasAttachAria = b.ariaLabel?.toLowerCase().includes('attach');
-                return isVisible(b) && (text.includes("attach") || text.includes("upload") || hasAttachId || hasAttachAria);
+                const hasAttachAria = (b.getAttribute('aria-label') || '')
+                    .toLowerCase().includes('attach');
+                return (
+                    isVisible(b) && (
+                        text.includes("attach") ||
+                        text.includes("upload") ||
+                        hasAttachId ||
+                        hasAttachAria
+                    )
+                );
             }});
 
             const menuUploadItem = buttons.find(b => {{
@@ -252,18 +269,24 @@ class ArtifactUploader:
             let attach_selector = null;
             if (attachButton) {{
                 const testid = attachButton.getAttribute('data-testid');
+                const aria = attachButton.getAttribute('aria-label');
+                const tag = (attachButton.tagName || 'button').toLowerCase();
                 if (testid) {{
-                    attach_selector = 'button[data-testid="' + escapeSelector(testid) + '"]';
-                }} else if (attachButton.ariaLabel) {{
-                    attach_selector = 'button[aria-label="' + escapeSelector(attachButton.ariaLabel) + '"]';
+                    attach_selector = tag + '[data-testid="' + escapeSelector(testid) + '"]';
+                }} else if (aria) {{
+                    attach_selector = tag + '[aria-label="' + escapeSelector(aria) + '"]';
                 }}
             }}
 
             let menu_selector = null;
             if (menuUploadItem) {{
                  const testid = menuUploadItem.getAttribute('data-testid');
+                 const aria = menuUploadItem.getAttribute('aria-label');
+                 const tag = (menuUploadItem.tagName || 'button').toLowerCase();
                  if (testid) {{
-                    menu_selector = 'button[data-testid="' + escapeSelector(testid) + '"]';
+                    menu_selector = tag + '[data-testid="' + escapeSelector(testid) + '"]';
+                 }} else if (aria) {{
+                    menu_selector = tag + '[aria-label="' + escapeSelector(aria) + '"]';
                  }}
             }}
 
@@ -271,12 +294,18 @@ class ArtifactUploader:
                 composer_found: true,
                 composer_tag: composer.tagName,
                 composer_root_tag: composerRoot ? composerRoot.tagName : null,
-                composer_root_html: (composerRoot && composerRoot !== document.body) ? composerRoot.outerHTML : null,
+                composer_root_html: (composerRoot && composerRoot !== document.body)
+                    ? composerRoot.outerHTML
+                    : null,
                 file_input_selector: fileInputs.length > 0 ? "input[type='file']" : null,
                 attach_button_selector: attach_selector,
                 menu_upload_selector: menu_selector,
                 all_file_inputs: fileInputs.map(i => ({{ id: i.id, className: i.className }})),
-                all_buttons: buttons.filter(isVisible).map(b => ({{ text: b.innerText, aria: b.ariaLabel, testid: b.getAttribute('data-testid') }}))
+                all_buttons: buttons.filter(isVisible).map(b => ({{
+                    text: b.innerText,
+                    aria: b.ariaLabel,
+                    testid: b.getAttribute('data-testid')
+                }}))
             }};
         }})()
         """
@@ -288,9 +317,19 @@ class ArtifactUploader:
         debug_dir = self.workspace_path / "debug" / "artifact_upload"
         debug_dir.mkdir(parents=True, exist_ok=True)
 
+        async def get_val(obj, key):
+            val = getattr(obj, key, None)
+            if inspect.isawaitable(val):
+                return await val
+            if callable(val):
+                return val()
+            return val
+
         try:
-            (debug_dir / "page_url.txt").write_text(await self.tab.url, encoding="utf-8")
-            (debug_dir / "page_title.txt").write_text(await self.tab.title, encoding="utf-8")
+            url = await get_val(self.tab, "url")
+            title = await get_val(self.tab, "title")
+            (debug_dir / "page_url.txt").write_text(str(url or "unknown"), encoding="utf-8")
+            (debug_dir / "page_title.txt").write_text(str(title or "unknown"), encoding="utf-8")
             (debug_dir / "document_ready_state.txt").write_text(
                 str(await self.tab.evaluate("document.readyState")), encoding="utf-8"
             )

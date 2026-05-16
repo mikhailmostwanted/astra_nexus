@@ -126,6 +126,7 @@ class NoDriverProvider(BrainProvider):
             "output_requested_as_file": bool(context.get("output_requested_as_file")),
             "requested_output_format": context.get("requested_output_format"),
             "input_artifacts": context.get("input_artifacts", []),
+            "intent": context.get("intent"),
         }
 
     async def _write_debug_report(

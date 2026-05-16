@@ -291,8 +291,13 @@ class ChatGPTClient:
         await self._wait_for_prompt_box(tab, debug_context, login_state or {})
 
         # Upload artifacts if provided in context AFTER prompt box is confirmed
+        # Only upload if explicitly enabled via metadata
         input_artifacts = debug_context.get("input_artifacts", [])
-        if input_artifacts:
+        should_upload = debug_context.get("artifact_upload_enabled") or debug_context.get(
+            "force_artifact_upload"
+        )
+
+        if input_artifacts and should_upload:
             self._log_stage("chatgpt.artifact.upload.started", debug_context)
             uploader = ArtifactUploader(
                 tab,
@@ -439,6 +444,10 @@ class ChatGPTClient:
 
             if attempt_number == 1:
                 retry_context = {**debug_context, "requested_file_retry": True}
+                # Clear input_artifacts in retry to avoid re-uploading
+                if "input_artifacts" in retry_context:
+                    retry_context["input_artifacts"] = []
+
                 retry_prompt = self._requested_file_retry_prompt(debug_context)
                 retry_wait_result = await self._submit_prompt_and_wait(
                     tab,
