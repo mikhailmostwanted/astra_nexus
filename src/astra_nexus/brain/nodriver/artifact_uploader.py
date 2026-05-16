@@ -20,6 +20,18 @@ class NoDriverArtifactInputPromptBoxNotFoundError(NoDriverProviderError):
     action = "Проверь, что ChatGPT открыт и интерфейс загрузки доступен."
 
 
+class NoDriverArtifactInputUploadButtonNotFoundError(NoDriverProviderError):
+    status = "artifact_input_upload_button_not_found"
+    user_message = "Кнопка загрузки файлов не найдена в интерфейсе ChatGPT."
+    action = "Проверь, доступна ли загрузка файлов в твоем аккаунте ChatGPT."
+
+
+class NoDriverArtifactInputUploadFailedError(NoDriverProviderError):
+    status = "artifact_input_upload_failed"
+    user_message = "Не удалось завершить загрузку файлов в ChatGPT."
+    action = "Попробуй перезагрузить страницу или проверь формат файлов."
+
+
 class ArtifactUploader:
     def __init__(self, tab: Any, workspace_path: Path | None = None) -> None:
         self.tab = tab
@@ -59,7 +71,7 @@ class ArtifactUploader:
         if attach_button_selector:
             logger.info(f"Clicking attach button: {attach_button_selector}")
             await self._click_selector(attach_button_selector)
-            await asyncio.sleep(1.0)  # Ждем появления меню или инпута
+            await asyncio.sleep(1.5)  # Ждем появления меню или инпута
 
             # Повторный поиск после клика
             probe_after_click = await self._probe_upload_elements()
@@ -77,7 +89,7 @@ class ArtifactUploader:
             if menu_upload_selector:
                 logger.info(f"Clicking menu upload item: {menu_upload_selector}")
                 await self._click_selector(menu_upload_selector)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(1.5)
 
                 probe_after_menu = await self._probe_upload_elements()
                 self.debug_data["probe_after_menu_click"] = probe_after_menu
@@ -89,17 +101,36 @@ class ArtifactUploader:
                         return True
 
         await self._dump_debug_info("artifact_input_upload_failed")
-        return False
+        if not attach_button_selector:
+            raise NoDriverArtifactInputUploadButtonNotFoundError(details=probe_result)
+
+        raise NoDriverArtifactInputUploadFailedError(details=self.debug_data)
 
     async def _handle_file_input(self, selector: str, file_paths: list[Path]) -> bool:
         try:
             element = await self.tab.query_selector(selector)
             if element:
-                # В nodriver метод для загрузки файлов может отличаться в зависимости от версии
-                # Обычно это set_input_files или аналогичный через CDP
                 await element.send_file(*[str(p) for p in file_paths])
-                self.debug_data["upload_result"] = {"status": "success", "selector": selector}
-                return True
+
+                # Ждем подтверждения загрузки (появления чипа с именем файла)
+                filenames = [p.name for p in file_paths]
+                deadline = asyncio.get_running_loop().time() + 10.0
+                while asyncio.get_running_loop().time() < deadline:
+                    probe = await self._probe_upload_status(filenames)
+                    if probe.get("upload_confirmed"):
+                        self.debug_data["upload_result"] = {
+                            "status": "success",
+                            "selector": selector,
+                            "confirmed_files": probe.get("found_files"),
+                        }
+                        return True
+                    await asyncio.sleep(0.5)
+
+                self.debug_data["upload_result"] = {
+                    "status": "timeout",
+                    "error": "Upload confirmation timeout",
+                    "selector": selector,
+                }
         except Exception as e:
             logger.error(f"Failed to upload via {selector}: {e}")
             self.debug_data["upload_result"] = {
@@ -108,6 +139,28 @@ class ArtifactUploader:
                 "selector": selector,
             }
         return False
+
+    async def _probe_upload_status(self, filenames: list[str]) -> dict[str, Any]:
+        filenames_json = json.dumps(filenames)
+        script = f"""
+        (() => {{
+            const filenames = {filenames_json};
+            const text = document.body.innerText.toLowerCase();
+            const found_files = filenames.filter(f => text.includes(f.toLowerCase()));
+
+            // Также ищем специфичные для ChatGPT элементы (чипы файлов)
+            const chips = Array.from(document.querySelectorAll('[data-testid*="file-chip"], [aria-label*="file"]'));
+            const chipTexts = chips.map(c => (c.innerText || c.ariaLabel || "").toLowerCase());
+            const found_in_chips = filenames.filter(f => chipTexts.some(t => t.includes(f.toLowerCase())));
+
+            return {{
+                upload_confirmed: found_files.length > 0 || found_in_chips.length > 0,
+                found_files: found_files,
+                found_in_chips: found_in_chips
+            }};
+        }})()
+        """
+        return await evaluate_script(self.tab, script)
 
     async def _click_selector(self, selector: str):
         try:
@@ -156,7 +209,12 @@ class ArtifactUploader:
             // Ищем кнопку "+" или "Attach"
             const attachButton = buttons.find(b => {{
                 const text = (b.innerText || b.ariaLabel || "").toLowerCase();
-                return isVisible(b) && (text.includes("attach") || text.includes("upload") || b.querySelector('svg'));
+                const hasAttachIcon = b.querySelector('svg') && (
+                    b.innerHTML.includes('plus') ||
+                    b.innerHTML.includes('attach') ||
+                    b.getAttribute('data-testid')?.includes('attach')
+                );
+                return isVisible(b) && (text.includes("attach") || text.includes("upload") || hasAttachIcon);
             }});
 
             const menuUploadItem = buttons.find(b => {{

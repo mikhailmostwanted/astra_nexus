@@ -63,6 +63,7 @@ def default_sequential_execution_plan(
     *,
     max_parallel_agents: int = 1,
     parallel_agent_timeout_seconds: float | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> TeamExecutionPlan:
     roles = tuple(pipeline)
     steps = []
@@ -87,7 +88,7 @@ def default_sequential_execution_plan(
         steps=tuple(steps),
         max_parallel_agents=max_parallel_agents,
         parallel_agent_timeout_seconds=parallel_agent_timeout_seconds,
-        metadata={"strategy": "pipeline_order"},
+        metadata=metadata or {"strategy": "pipeline_order"},
     )
 
 
