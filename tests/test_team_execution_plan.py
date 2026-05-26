@@ -294,3 +294,56 @@ def test_parallel_preview_cli_uses_fake_provider(tmp_path, capsys) -> None:
     assert "fake:final_composer" in output
     assert "NoDriver" not in source
     assert "nodriver" not in source
+
+
+def test_execution_plan_for_intents() -> None:
+    from astra_nexus.team.execution_plan import execution_plan_for_mode
+    from astra_nexus.team.intake import TeamInputIntent
+
+    # Simple Answer
+    plan = execution_plan_for_mode(
+        TeamExecutionMode.SEQUENTIAL, pipeline=[], intent=TeamInputIntent.SIMPLE_ANSWER
+    )
+    assert len(plan.steps) == 1
+    assert plan.steps[0].roles == (AgentRole.FINAL_COMPOSER,)
+    assert plan.metadata.get("strategy") == "simple_answer_intent"
+
+    # File Generation
+    plan = execution_plan_for_mode(
+        TeamExecutionMode.SEQUENTIAL, pipeline=[], intent=TeamInputIntent.FILE_GENERATION
+    )
+    assert len(plan.steps) == 2
+    assert plan.steps[0].roles == (AgentRole.ANALYST,)
+    assert plan.steps[1].roles == (AgentRole.FINAL_COMPOSER,)
+
+    # File Task
+    plan = execution_plan_for_mode(
+        TeamExecutionMode.SEQUENTIAL, pipeline=[], intent=TeamInputIntent.FILE_TASK
+    )
+    assert len(plan.steps) == 3
+    assert plan.steps[0].roles == (AgentRole.ANALYST,)
+    assert plan.steps[1].roles == (AgentRole.EDITOR,)
+    assert plan.steps[2].roles == (AgentRole.FINAL_COMPOSER,)
+
+    # Debug Mode
+    plan = execution_plan_for_mode(
+        TeamExecutionMode.SEQUENTIAL, pipeline=[], intent=TeamInputIntent.DEBUG_MODE
+    )
+    assert len(plan.steps) == 4
+    assert plan.steps[0].roles == (AgentRole.ANALYST,)
+    assert plan.steps[3].roles == (AgentRole.FINAL_COMPOSER,)
+
+
+def test_orchestrator_handles_file_generation_intent() -> None:
+    from astra_nexus.team.intake import TeamInputIntent
+
+    provider = FakeTeamProvider()
+    orchestrator = AsyncTeamOrchestrator(provider=provider)
+
+    outcome = asyncio.run(
+        orchestrator.run("сделай отчет в pdf", intent=TeamInputIntent.FILE_GENERATION)
+    )
+
+    assert outcome.run.execution_plan.metadata.get("strategy") == "file_generation_intent"
+    roles = [result.profile.role for result in outcome.run.results]
+    assert roles == [AgentRole.ANALYST, AgentRole.FINAL_COMPOSER]

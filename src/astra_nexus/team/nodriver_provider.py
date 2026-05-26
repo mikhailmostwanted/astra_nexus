@@ -149,6 +149,8 @@ class NoDriverTeamProvider(TeamProvider):
             "attempt_number": metadata.get("attempt_number"),
             "output_requested_as_file": bool(metadata.get("output_requested_as_file")),
             "requested_output_format": metadata.get("requested_output_format"),
+            "input_artifacts": metadata.get("input_artifacts", []),
+            "intent": metadata.get("intent"),
         }
 
     def _content(self, response: BrainResponse | Any) -> str:

@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from html import escape
 from html.parser import HTMLParser
+from typing import Any
 from urllib.parse import urlparse
 
 TELEGRAM_HTML_PARSE_MODE = "HTML"
@@ -468,3 +469,49 @@ def _looks_like_source_chip_label(value: str) -> bool:
     return bool(
         re.match(r"^[^\n]{1,60}\s+\+\s+\d+$", normalized) or re.match(r"^\+\s*\d+$", normalized)
     )
+
+
+class LogCardRenderer:
+    def __init__(self, profiles_by_role: dict | None = None) -> None:
+        self.profiles_by_role = profiles_by_role or {}
+
+    def render_event(self, event: Any) -> str:
+        """
+        Рендерит событие в виде компактной карточки для лог-чата.
+        """
+        event_type = getattr(event, "type", None)
+        if hasattr(event_type, "value"):
+            event_type = event_type.value
+
+        emoji = self._get_emoji(event_type)
+        message = getattr(event, "message", "Без сообщения")
+
+        lines = [f"{emoji} <b>{event_type.upper()}</b>: {message}"]
+
+        payload = getattr(event, "payload", {})
+        if not isinstance(payload, dict):
+            payload = {}
+
+        details = []
+        for key in ("run_id", "role", "agent_id", "status", "error_code", "intent"):
+            val = payload.get(key)
+            if val:
+                details.append(f"<code>{key}={val}</code>")
+
+        if details:
+            lines.append(" ".join(details))
+
+        return "\n".join(lines)
+
+    def _get_emoji(self, event_type: str) -> str:
+        mapping = {
+            "run_started": "🎬",
+            "run_finished": "✅",
+            "run_failed": "❌",
+            "agent_started": "👤",
+            "agent_finished": "🏁",
+            "agent_failed": "⚠️",
+            "agent_retry_started": "🔄",
+            "agent_retry_scheduled": "⏳",
+        }
+        return mapping.get(str(event_type).lower(), "ℹ️")

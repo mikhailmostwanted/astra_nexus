@@ -14,6 +14,7 @@ from astra_nexus.brain.nodriver.artifact_detector import (
     artifact_detection_from_probe_payload,
     build_artifact_detector_probe_script,
 )
+from astra_nexus.brain.nodriver.artifact_uploader import ArtifactUploader
 from astra_nexus.brain.nodriver.browser_session import BrowserSession
 from astra_nexus.brain.nodriver.dom_probe import (
     LOGIN_STATE_PROBE_SCRIPT,
@@ -60,6 +61,8 @@ class ResponseWaitState(StrEnum):
     ASSISTANT_SEGMENT_SEEN = "assistant_segment_seen"
     THINKING_OR_STREAMING = "thinking_or_streaming"
     INTERMEDIATE_RESPONSE_SEEN = "intermediate_response_seen"
+    THINKING = "thinking"
+    WRITING = "writing"
     WAITING_FOR_FINAL_IDLE = "waiting_for_final_idle"
     FINAL_RESPONSE_READY = "final_response_ready"
     FAILED = "failed"
@@ -287,6 +290,38 @@ class ChatGPTClient:
         self._log_stage("chatgpt.prompt_box.search.started", debug_context)
         await self._wait_for_prompt_box(tab, debug_context, login_state or {})
 
+        # Upload artifacts if provided in context AFTER prompt box is confirmed
+        # Only upload if explicitly enabled via metadata
+        input_artifacts = debug_context.get("input_artifacts", [])
+        should_upload = debug_context.get("artifact_upload_enabled") or debug_context.get(
+            "force_artifact_upload"
+        )
+
+        if input_artifacts and should_upload:
+            self._log_stage("chatgpt.artifact.upload.started", debug_context)
+            uploader = ArtifactUploader(
+                tab,
+                workspace_path=Path(debug_context.get("workspace_path"))
+                if debug_context.get("workspace_path")
+                else None,
+            )
+            try:
+                success = await uploader.upload([Path(p) for p in input_artifacts])
+                if not success:
+                    raise NoDriverProviderError(
+                        "Не удалось подтвердить загрузку файлов артефактов.",
+                        stage="chatgpt.artifact.upload",
+                    )
+                self._log_stage("chatgpt.artifact.upload.ok", debug_context)
+            except NoDriverProviderError as exc:
+                self._log_stage(
+                    "chatgpt.artifact.upload.failed",
+                    debug_context,
+                    error_code=exc.error_code,
+                    message=str(exc),
+                )
+                raise
+
         self._log_stage("chatgpt.prompt.insert.started", debug_context)
         await self._fill_prompt(tab, prompt)
         self._log_stage("chatgpt.prompt.insert.ok", debug_context)
@@ -409,6 +444,10 @@ class ChatGPTClient:
 
             if attempt_number == 1:
                 retry_context = {**debug_context, "requested_file_retry": True}
+                # Clear input_artifacts in retry to avoid re-uploading
+                if "input_artifacts" in retry_context:
+                    retry_context["input_artifacts"] = []
+
                 retry_prompt = self._requested_file_retry_prompt(debug_context)
                 retry_wait_result = await self._submit_prompt_and_wait(
                     tab,
@@ -1633,6 +1672,8 @@ class ChatGPTClient:
         segments: list[str],
     ) -> ResponseWaitState:
         if not segments:
+            if snapshot.thinking_indicators_count > 0:
+                return ResponseWaitState.THINKING
             if (
                 snapshot.is_generating
                 or snapshot.stop_button_visible
@@ -1640,9 +1681,13 @@ class ChatGPTClient:
             ):
                 return ResponseWaitState.GENERATION_STARTED
             return ResponseWaitState.PROMPT_SUBMITTED
+        if snapshot.thinking_indicators_count > 0:
+            return ResponseWaitState.THINKING
+        if snapshot.streaming_indicators_count > 0 or snapshot.is_generating:
+            return ResponseWaitState.WRITING
         if len(segments) > 1:
             return ResponseWaitState.INTERMEDIATE_RESPONSE_SEEN
-        if snapshot.is_generating or snapshot.stop_button_visible or snapshot.visible_indicators:
+        if snapshot.stop_button_visible or snapshot.visible_indicators:
             return ResponseWaitState.THINKING_OR_STREAMING
         return ResponseWaitState.ASSISTANT_SEGMENT_SEEN
 

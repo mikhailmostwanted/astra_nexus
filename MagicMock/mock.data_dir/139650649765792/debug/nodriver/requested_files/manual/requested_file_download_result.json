@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-05-16T20:23:35.226959+00:00",
+  "success": false,
+  "path": null,
+  "filename": null,
+  "size_bytes": 0,
+  "extension": null,
+  "reason": "no_download_candidate",
+  "candidate": null,
+  "downloads_dir": "MagicMock/mock.data_dir/139650649765792/debug/nodriver/requested_files/manual/requested_files/downloads",
+  "partial_files": [],
+  "attempts": [
+    {
+      "attempt_number": 1,
+      "detector": "<MagicMock name='_detect_requested_file_artifacts().as_dict()' id='139650651089728'>"
+    },
+    {
+      "attempt_number": 2,
+      "detector": "<MagicMock name='_detect_requested_file_artifacts().as_dict()' id='139650651089728'>"
+    }
+  ]
+}

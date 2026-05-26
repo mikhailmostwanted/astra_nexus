@@ -63,6 +63,7 @@ def default_sequential_execution_plan(
     *,
     max_parallel_agents: int = 1,
     parallel_agent_timeout_seconds: float | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> TeamExecutionPlan:
     roles = tuple(pipeline)
     steps = []
@@ -87,7 +88,7 @@ def default_sequential_execution_plan(
         steps=tuple(steps),
         max_parallel_agents=max_parallel_agents,
         parallel_agent_timeout_seconds=parallel_agent_timeout_seconds,
-        metadata={"strategy": "pipeline_order"},
+        metadata=metadata or {"strategy": "pipeline_order"},
     )
 
 
@@ -176,7 +177,36 @@ def execution_plan_for_mode(
     pipeline: tuple[AgentRole, ...] | list[AgentRole],
     max_parallel_agents: int = 2,
     parallel_agent_timeout_seconds: float | None = 240.0,
+    intent: str | None = None,
 ) -> TeamExecutionPlan:
+    if intent:
+        from astra_nexus.team.intake import TeamInputIntent
+
+        if intent == TeamInputIntent.SIMPLE_ANSWER:
+            return default_sequential_execution_plan(
+                [AgentRole.FINAL_COMPOSER], metadata={"strategy": "simple_answer_intent"}
+            )
+        if intent == TeamInputIntent.FILE_GENERATION:
+            return default_sequential_execution_plan(
+                [AgentRole.ANALYST, AgentRole.FINAL_COMPOSER],
+                metadata={"strategy": "file_generation_intent"},
+            )
+        if intent == TeamInputIntent.FILE_TASK:
+            return default_sequential_execution_plan(
+                [AgentRole.ANALYST, AgentRole.EDITOR, AgentRole.FINAL_COMPOSER],
+                metadata={"strategy": "file_task_intent"},
+            )
+        if intent == TeamInputIntent.DEBUG_MODE:
+            return default_sequential_execution_plan(
+                [
+                    AgentRole.ANALYST,
+                    AgentRole.CRITIC,
+                    AgentRole.QA_CONTROLLER,
+                    AgentRole.FINAL_COMPOSER,
+                ],
+                metadata={"strategy": "debug_mode_intent"},
+            )
+
     normalized = TeamExecutionMode(mode)
     if normalized == TeamExecutionMode.PARALLEL:
         return default_parallel_execution_plan(
